@@ -73,7 +73,7 @@ void main() {
       final threats = notifier.parseLocalThreats('Реактивний шахед Герань-3 курсом на Ірпінь');
       expect(threats.isNotEmpty, isTrue);
       expect(threats.first['type'], equals('shahed_jet'));
-      expect(threats.first['speed'], equals(500.0));
+      expect(threats.first['speed'], equals(480.0));
     });
   });
 
@@ -221,7 +221,7 @@ void main() {
       final threats = notifier.parseLocalThreats('Швидкісний дрон / реактивний шахед на Бобровицю');
       expect(threats.isNotEmpty, isTrue);
       expect(threats.first['type'], equals('shahed_jet'));
-      expect(threats.first['speed'], equals(500.0));
+      expect(threats.first['speed'], equals(480.0));
     });
 
     test('Recognizes Chernihiv/Pryluky missile corridor locations', () {
@@ -693,8 +693,44 @@ void main() {
       final notifier = MessagesNotifier();
       final threats = notifier.parseLocalThreats('Бородянка, висота 2600 м');
       expect(threats.isNotEmpty, isTrue);
-      expect(threats.first['type'], equals('shahed'));
+      expect(threats.first['type'], equals('shahed_jet'));
+      expect(threats.first['speed'], equals(480.0));
       expect(threats.first['altitudeMeters'], equals(2600));
+
+      final lowAltThreats = notifier.parseLocalThreats('Бородянка, висота 1200 м');
+      expect(lowAltThreats.isNotEmpty, isTrue);
+      expect(lowAltThreats.first['type'], equals('shahed'));
+      expect(lowAltThreats.first['speed'], equals(185.0));
+      expect(lowAltThreats.first['altitudeMeters'], equals(1200));
+    });
+
+    test('Classifies shahed_jet on high altitude >= 2000m ("2600", "2700", "2200")', () {
+      final notifier = MessagesNotifier();
+      final t2600 = notifier.parseLocalThreats('БпЛА через Бучу, висота 2600');
+      expect(t2600.first['type'], equals('shahed_jet'));
+      expect(t2600.first['speed'], equals(480.0));
+
+      final t2200 = notifier.parseLocalThreats('Дрон на Бровари 2200');
+      expect(t2200.first['type'], equals('shahed_jet'));
+      expect(t2200.first['speed'], equals(480.0));
+    });
+
+    test('Excludes piston drone markers ("звичайний", "звч", "мопед", "двз") from shahed_jet even at high altitude', () {
+      final notifier = MessagesNotifier();
+      final threats = notifier.parseLocalThreats('Звичайний шахед (двз/мопед), висота 2400 на Боярку');
+      expect(threats.first['type'], equals('shahed'));
+      expect(threats.first['speed'], equals(185.0));
+    });
+
+    test('Recognizes expanded jet keywords: бандероль, турбо, герань-3, швидкісний', () {
+      final notifier = MessagesNotifier();
+      final t1 = notifier.parseLocalThreats('Бандероль на Васильків');
+      expect(t1.first['type'], equals('shahed_jet'));
+      expect(t1.first['speed'], equals(480.0));
+
+      final t2 = notifier.parseLocalThreats('Турбо шахед курсом на Київ');
+      expect(t2.first['type'], equals('shahed_jet'));
+      expect(t2.first['speed'], equals(480.0));
     });
   });
 }

@@ -1004,8 +1004,8 @@ List<String> _dynamicExtraChannels = [];
 List<String> _dynamicDangerKeywords = [];
 List<String> _dynamicClearKeywords = [];
 
-const int kCurrentVersionCode = 16;
-const String kCurrentVersionName = '1.2.13';
+const int kCurrentVersionCode = 17;
+const String kCurrentVersionName = '1.2.14';
 
 class RemoteConfig {
   final int versionCode;
@@ -1319,21 +1319,40 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
       }
     }
 
-    bool highAlt = (altitudeMeters != null && altitudeMeters >= 4000);
+    final bool hasPistonDrone = tLower.contains('звичайний') ||
+        tLower.contains('звичайні') ||
+        tLower.contains('звч') ||
+        tLower.contains('не реактив') ||
+        tLower.contains('двз') ||
+        tLower.contains('мопед') ||
+        tLower.contains('повільн');
+
+    bool highAlt = (altitudeMeters != null && altitudeMeters >= 2000);
     if (!highAlt) {
       final altMatch = RegExp(r'(\d+(?:[.,]\d+)?)\s*(м|км)\b', caseSensitive: false).firstMatch(tLower);
       if (altMatch != null) {
         final val = double.tryParse(altMatch.group(1)!.replaceAll(',', '.')) ?? 0.0;
         final unit = altMatch.group(2)!.toLowerCase();
-        if ((unit == 'км' && val >= 4.0) || (unit == 'м' && val >= 4000.0)) {
+        if ((unit == 'км' && val >= 2.0) || (unit == 'м' && val >= 2000.0)) {
           highAlt = true;
         }
       }
     }
 
-    final bool isJet = tLower.contains('реактив') || tLower.contains('швидкісн') || tLower.contains('бандерол') || tLower.contains('герань-3') || highAlt;
+    final bool isJet = !hasPistonDrone && (
+        tLower.contains('реактив') ||
+        tLower.contains('реактів') ||
+        tLower.contains('реакти') ||
+        tLower.contains('реакт ') ||
+        tLower.contains('швидкісн') ||
+        tLower.contains('бандерол') ||
+        tLower.contains('герань-3') ||
+        tLower.contains('герань 3') ||
+        tLower.contains('турбо') ||
+        highAlt);
+
     if (isJet) {
-      return {'type': 'shahed_jet', 'speed': 500.0, 'label': 'Реактивний БпЛА'};
+      return {'type': 'shahed_jet', 'speed': 480.0, 'label': 'Реактивний БпЛА'};
     }
     return {'type': 'shahed', 'speed': 185.0, 'label': 'Ударний БпЛА (Шахед)'};
   }
@@ -2086,7 +2105,7 @@ double _getDefaultThreatSpeed(String type) {
     case 'uav_guided': return 220.0;
     case 'uav_recon': return 130.0;
     case 'uav_decoy': return 160.0;
-    case 'shahed_jet': return 500.0;
+    case 'shahed_jet': return 480.0;
     case 'shahed':
     default: return 185.0;
   }
@@ -2605,11 +2624,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
         duration: Duration(seconds: 2),
       ),
     );
+    final messenger = ScaffoldMessenger.of(context);
     final ok = await ref.read(remoteConfigProvider.notifier).refresh();
     if (!mounted) return;
     final cfg = ref.read(remoteConfigProvider);
     if (cfg.versionCode > kCurrentVersionCode && cfg.apkUrl.isNotEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         SnackBar(
           content: Text('🚀 Доступне оновлення v${cfg.versionName} (збірка ${cfg.versionCode})! Банер зʼявився вгорі.'),
           backgroundColor: Colors.purple.shade700,
@@ -2617,7 +2637,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
         ),
       );
     } else if (ok) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         SnackBar(
           content: Text('✅ У вас встановлена найновіша версія (v$kCurrentVersionName, збірка $kCurrentVersionCode).'),
           backgroundColor: Colors.green.shade800,
@@ -2625,7 +2645,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
         ),
       );
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         const SnackBar(
           content: Text('⚠️ Не вдалося звʼязатися із сервером оновлень. Перевірте зʼєднання з мережею.'),
           backgroundColor: Colors.orangeAccent,
@@ -4676,6 +4696,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                             bool activeBallisticOrMissileContext = false;
                             DateTime? missileContextTime;
+                            bool activeJetDroneContext = false;
+                            DateTime? jetContextTime;
 
                             for (var msg in recentMsgs) {
                               DateTime msgTime = now;
@@ -4696,6 +4718,40 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   msgTextLower.contains('двз') ||
                                   msgTextLower.contains('кружляє') ||
                                   msgTextLower.contains('геран');
+
+                              final bool hasPistonDroneInMsg = msgTextLower.contains('звичайний') ||
+                                  msgTextLower.contains('звичайні') ||
+                                  msgTextLower.contains('звч') ||
+                                  msgTextLower.contains('не реактив') ||
+                                  msgTextLower.contains('двз') ||
+                                  msgTextLower.contains('мопед') ||
+                                  msgTextLower.contains('повільн') ||
+                                  msgTextLower.contains('розвідник');
+
+                              final int? msgAlt = ref.read(messagesProvider.notifier).extractAltitude(rawMsgText);
+                              final bool msgHasHighAlt = msgAlt != null && msgAlt >= 2000;
+
+                              final bool isJetTrigger = !hasPistonDroneInMsg && (
+                                  msgTextLower.contains('реактив') ||
+                                  msgTextLower.contains('реактів') ||
+                                  msgTextLower.contains('реакти') ||
+                                  msgTextLower.contains('реакт ') ||
+                                  msgTextLower.contains('швидкісн') ||
+                                  msgTextLower.contains('бандерол') ||
+                                  msgTextLower.contains('герань-3') ||
+                                  msgTextLower.contains('герань 3') ||
+                                  msgTextLower.contains('турбо') ||
+                                  msgHasHighAlt
+                              );
+
+                              if (isJetTrigger) {
+                                activeJetDroneContext = true;
+                                jetContextTime = msgTime;
+                              }
+
+                              if (jetContextTime != null && msgTime.difference(jetContextTime).inMinutes.abs() > 20) {
+                                activeJetDroneContext = false;
+                              }
 
                               // а) коротке повідомлення капсом РІВНО з одного або двох слів капсом без назв населених пунктів:
                               final trimmedText = rawMsgText.trim();
@@ -4796,6 +4852,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   activeBallisticOrMissileContext = false;
                                   missileContextTime = null;
                                 }
+                                if (onlyClearUavs || (!onlyClearUavs && !onlyClearMissiles)) {
+                                  activeJetDroneContext = false;
+                                  jetContextTime = null;
+                                }
                                 
                                 if (msgTextLower.contains('київ') &&
                                     !msgTextLower.contains('київщин') &&
@@ -4833,7 +4893,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                 rawThreats = ref.read(messagesProvider.notifier).parseLocalThreats(msg['text']?.toString() ?? '');
                               }
 
-                              // Примусове переоцінювання кешованих msg['threats'] під час активного балістичного контексту
+                              // Примусове переоцінювання кешованих msg['threats'] під час активного балістичного або реактивного контексту
                               final List<Map<String, dynamic>> msgThreats = [];
                               for (var item in rawThreats) {
                                 if (item is Map) {
@@ -4844,6 +4904,14 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       copy['type'] = 'missile_ballistic';
                                       copy['speed'] = 5000.0;
                                       copy['label'] = 'Балістична ціль';
+                                    }
+                                  } else if (activeJetDroneContext && !hasPistonDroneInMsg) {
+                                    final curType = (copy['type'] ?? 'shahed').toString();
+                                    final alt = copy['altitudeMeters'] as int?;
+                                    if ((curType == 'shahed' || curType == 'unknown') && (alt == null || alt >= 1500)) {
+                                      copy['type'] = 'shahed_jet';
+                                      copy['speed'] = 480.0;
+                                      copy['label'] = 'Реактивний БпЛА';
                                     }
                                   }
                                   msgThreats.add(copy);
@@ -4953,6 +5021,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     if (rawType == 'shahed' || rawType == 'shahed_jet') {
                                       rawType = 'missile_ballistic';
                                     }
+                                  } else if (activeJetDroneContext && !hasPistonDroneInMsg) {
+                                    final alt = t['altitudeMeters'] as int?;
+                                    if (rawType == 'shahed' && (alt == null || alt >= 1500)) {
+                                      rawType = 'shahed_jet';
+                                    }
                                   }
 
                                   String defaultLabel = _getDefaultThreatLabel(rawType);
@@ -4960,10 +5033,14 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   double speed = (t['speed'] as num?)?.toDouble() ?? defaultSpeed;
                                   if (rawType == 'missile_ballistic' && speed < 1000.0) {
                                     speed = 5000.0;
+                                  } else if (rawType == 'shahed_jet' && speed < 300.0) {
+                                    speed = 480.0;
                                   }
 
                                   String effectiveLabel = (t['label'] ?? '').toString();
-                                  if (effectiveLabel.isEmpty || (rawType == 'missile_ballistic' && effectiveLabel.contains('Шахед'))) {
+                                  if (effectiveLabel.isEmpty || 
+                                      (rawType == 'missile_ballistic' && effectiveLabel.contains('Шахед')) ||
+                                      (rawType == 'shahed_jet' && (effectiveLabel.contains('Шахед') || effectiveLabel.contains('185')))) {
                                     effectiveLabel = defaultLabel;
                                   }
 
@@ -4998,6 +5075,14 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           // Заборона пониження класу цілі (No Downgrade Rule):
                                           final bool existingIsMissile = existing['type'] != null &&
                                               (existing['type'].toString().contains('missile') || existing['type'] == 'kab');
+                                          final bool existingIsJet = existing['type'] == 'shahed_jet';
+
+                                          if (existingIsJet && rawType == 'shahed' && !hasPistonDroneInMsg) {
+                                            rawType = 'shahed_jet';
+                                            effectiveLabel = _getDefaultThreatLabel('shahed_jet');
+                                            speed = 480.0;
+                                          }
+
                                           if (!existingIsMissile || rawType.contains('missile') || rawType == 'kab') {
                                             existing['type'] = rawType;
                                             existing['label'] = effectiveLabel;
@@ -5031,6 +5116,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                             existingType == 'kab';
 
                                         final bool canMergeType = (existingType == rawType) ||
+                                            (existingType == 'shahed_jet' && rawType == 'shahed') ||
+                                            (existingType == 'shahed' && rawType == 'shahed_jet') ||
                                             isMissileThreat ||
                                             existingIsMissile;
 
@@ -5051,15 +5138,16 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                                         // Розрахунок дозволеної дистанції з урахуванням ракетної швидкості
                                         final bool isAnyMissile = isMissileThreat || existingIsMissile || activeBallisticOrMissileContext;
+                                        final bool isJetThreat = (existingType == 'shahed_jet' || rawType == 'shahed_jet');
 
-                                        // Якщо це БпЛА і відстань за 1 хвилину перевищує 25 км — не об'єднувати, а вважати двома окремими БпЛА!
-                                        if (!isAnyMissile && timeDiffMins <= 1 && distMeters > 25000.0) {
+                                        // Якщо це звичайний БпЛА (не реактивний) і відстань за 1 хвилину перевищує 25 км — не об'єднувати, а вважати двома окремими БпЛА!
+                                        if (!isAnyMissile && !isJetThreat && timeDiffMins <= 1 && distMeters > 25000.0) {
                                           continue;
                                         }
 
-                                        final double maxAllowed = isAnyMissile ? 180000.0 : 90000.0;
-                                        final double baseDist = isAnyMissile ? 60000.0 : 25000.0;
-                                        final double effSpeed = isAnyMissile ? math.max(speed, 5000.0) : speed;
+                                        final double maxAllowed = isAnyMissile ? 180000.0 : (isJetThreat ? 120000.0 : 90000.0);
+                                        final double baseDist = isAnyMissile ? 60000.0 : (isJetThreat ? 35000.0 : 25000.0);
+                                        final double effSpeed = isAnyMissile ? math.max(speed, 5000.0) : (isJetThreat ? math.max(speed, 480.0) : speed);
                                         final double allowedDist = (baseDist + (timeDiffMins * (effSpeed * 1000.0 / 60.0))).clamp(baseDist, maxAllowed);
 
                                         // Об'єднуємо послідовні точки однієї цілі
@@ -5069,6 +5157,13 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                               existing['type'] = 'missile_ballistic';
                                               existing['speed'] = 5000.0;
                                               existing['label'] = 'Балістична / Швидкісна ціль';
+                                            }
+                                          } else if (isJetThreat) {
+                                            // No Downgrade: якщо ціль була або стала shahed_jet, не повертати до shahed
+                                            if (!hasPistonDroneInMsg) {
+                                              existing['type'] = 'shahed_jet';
+                                              existing['speed'] = 480.0;
+                                              existing['label'] = 'Реактивний БпЛА';
                                             }
                                           }
 
@@ -5201,17 +5296,21 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       targetThreat['altitudeMeters'] = alt;
                                       targetThreat['altitude'] = '$alt м';
 
-                                      // Якщо targetThreat мав помилковий тип 'missile_ballistic', змінюємо на БпЛА зі швидкістю 185
+                                      // Якщо targetThreat мав помилковий тип 'missile_ballistic', змінюємо на БпЛА зі швидкістю 185 або 480
                                       if (targetThreat['type'] == 'missile_ballistic') {
-                                        if (alt < 3500) {
+                                        if (alt < 2000) {
                                           targetThreat['type'] = 'shahed';
                                           targetThreat['label'] = 'Шахед / БпЛА';
                                           targetThreat['speed'] = 185.0;
                                         } else {
                                           targetThreat['type'] = 'shahed_jet';
                                           targetThreat['label'] = 'Реактивний БпЛА';
-                                          targetThreat['speed'] = 185.0;
+                                          targetThreat['speed'] = 480.0;
                                         }
+                                      } else if (alt >= 2000 && targetThreat['type'] == 'shahed') {
+                                        targetThreat['type'] = 'shahed_jet';
+                                        targetThreat['label'] = 'Реактивний БпЛА';
+                                        targetThreat['speed'] = 480.0;
                                       }
                                     } else if (isDescKeyword) {
                                       targetThreat['isDescending'] = true;
@@ -5683,7 +5782,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       markers: [
                                         Marker(
                                           point: _rulerTargetPoint!,
-                                          width: 320,
+                                          width: 360,
                                           height: 38,
                                           alignment: Alignment.topCenter,
                                           child: Builder(
@@ -5693,6 +5792,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                               final String originName = homeLoc?.name ?? 'Київ';
                                               final double distMeters = const Distance().as(LengthUnit.Meter, originPt, _rulerTargetPoint!);
                                               final double distKm = distMeters / 1000.0;
+                                              final int jetMin = (distKm / 480.0 * 60.0).round().clamp(1, 180);
                                               final int uavMin = (distKm / 185.0 * 60.0).round().clamp(1, 999);
                                               final int missileSec = (distMeters / 250.0).round().clamp(1, 9999);
                                               return FractionalTranslation(
@@ -5713,7 +5813,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                                       ],
                                                     ),
                                                     child: Text(
-                                                      "📏 ${distKm.toStringAsFixed(1)} км від '$originName' • БпЛА: ~$uavMin хв • Ракета: ~$missileSec с",
+                                                      "📏 ${distKm.toStringAsFixed(1)} км від '$originName' • Реактив: ~$jetMin хв • БпЛА: ~$uavMin хв • Ракета: ~$missileSec с",
                                                       style: const TextStyle(
                                                         color: Colors.white,
                                                         fontSize: 10.5,
