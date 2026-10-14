@@ -194,7 +194,7 @@ void main() {
     final notifier = MessagesNotifier();
 
     test('Classifies standalone "ЦІЛЬ" or "!!!!" without drone keywords as missile_ballistic', () {
-      final threats1 = notifier.parseLocalThreats('ЦІЛЬ на Бровари');
+      final threats1 = notifier.parseLocalThreats('Швидкісна ціль на Бровари');
       expect(threats1.isNotEmpty, isTrue);
       expect(threats1.first['type'], equals('missile_ballistic'));
       expect(threats1.first['speed'], equals(5000.0));
@@ -279,21 +279,26 @@ void main() {
       expect(notifier.categorizeLocalMessage('УВАГА !!'), equals('danger'));
     });
 
-    test('parseLocalThreats classifies short urgent alerts and "багато цілей" as missile_ballistic', () {
-      final threats1 = notifier.parseLocalThreats('Боярка, Васік !!');
+    test('parseLocalThreats leaves local alerts without missile triggers as shahed and requires explicit triggers for ballistic', () {
+      final threats1 = notifier.parseLocalThreats('Бородянка та Бабинці увага ⚠️');
       expect(threats1.isNotEmpty, isTrue);
-      expect(threats1.first['type'], equals('missile_ballistic'));
-      expect(threats1.first['speed'], equals(5000.0));
+      expect(threats1.first['type'], equals('shahed'));
+      expect(threats1.first['speed'], equals(185.0));
+
+      final threatsBoyarka = notifier.parseLocalThreats('Боярка, Васік !!');
+      expect(threatsBoyarka.isNotEmpty, isTrue);
+      expect(threatsBoyarka.first['type'], equals('shahed'));
+      expect(threatsBoyarka.first['speed'], equals(185.0));
 
       final threats2 = notifier.parseLocalThreats('Багато цілей йде на Київ');
       expect(threats2.isNotEmpty, isTrue);
       expect(threats2.first['type'], equals('missile_ballistic'));
       expect(threats2.first['speed'], equals(5000.0));
 
-      final threats3 = notifier.parseLocalThreats('УВАГА! Васильків');
-      expect(threats3.isNotEmpty, isTrue);
-      expect(threats3.first['type'], equals('missile_ballistic'));
-      expect(threats3.first['speed'], equals(5000.0));
+      final threats4Exclamations = notifier.parseLocalThreats('Васильків !!!!');
+      expect(threats4Exclamations.isNotEmpty, isTrue);
+      expect(threats4Exclamations.first['type'], equals('missile_ballistic'));
+      expect(threats4Exclamations.first['speed'], equals(5000.0));
 
       // Explicit drone remains shahed
       final droneThreats = notifier.parseLocalThreats('Шахед на Васильків');
@@ -673,6 +678,23 @@ void main() {
       expect(kept.any((m) => m['id'] == 1), isTrue, reason: '11 hours old should be retained');
       expect(kept.any((m) => m['id'] == 2), isTrue, reason: '8 hours old should be retained');
       expect(kept.any((m) => m['id'] == 3), isFalse, reason: '13 hours old should be dropped (> 12h)');
+    });
+
+    test('extractAltitude correctly extracts numbers ("2600", "2700", "висота 2500 м")', () {
+      final notifier = MessagesNotifier();
+      expect(notifier.extractAltitude('2600'), equals(2600));
+      expect(notifier.extractAltitude('2700'), equals(2700));
+      expect(notifier.extractAltitude('висота 2500 м'), equals(2500));
+      expect(notifier.extractAltitude('h 1800'), equals(1800));
+      expect(notifier.extractAltitude('висота: 3200'), equals(3200));
+    });
+
+    test('Threat with UAV altitude (300..5000m) is never mistakenly classified as missile_ballistic', () {
+      final notifier = MessagesNotifier();
+      final threats = notifier.parseLocalThreats('Бородянка, висота 2600 м');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['type'], equals('shahed'));
+      expect(threats.first['altitudeMeters'], equals(2600));
     });
   });
 }

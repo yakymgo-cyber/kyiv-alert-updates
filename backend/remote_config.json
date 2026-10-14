@@ -1,8 +1,8 @@
 {
-  "version_code": 15,
-  "version_name": "1.2.12",
-  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.12/app-release.apk",
-  "changelog": "Виправлення обрізання новин, підрахунку нічних ракет, фільтра дайджестів та витоків пам'яті",
+  "version_code": 16,
+  "version_name": "1.2.13",
+  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.13/app-release.apk",
+  "changelog": "Виправлення хибної балістики на локаціях з ⚠️ та обробка висоти БпЛА",
   "extra_locations": {
     "новосілки": {
       "lat": 50.3547,

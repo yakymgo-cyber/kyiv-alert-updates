@@ -1004,8 +1004,8 @@ List<String> _dynamicExtraChannels = [];
 List<String> _dynamicDangerKeywords = [];
 List<String> _dynamicClearKeywords = [];
 
-const int kCurrentVersionCode = 15;
-const String kCurrentVersionName = '1.2.12';
+const int kCurrentVersionCode = 16;
+const String kCurrentVersionName = '1.2.13';
 
 class RemoteConfig {
   final int versionCode;
@@ -1252,6 +1252,11 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
 
   int? _extractAltitude(String text) {
     final tLower = text.toLowerCase();
+    final mExplicit = RegExp(r'(?:висот[аі]|h|alt)\s*[:=-]?\s*(\d{3,4})', caseSensitive: false).firstMatch(tLower);
+    if (mExplicit != null) {
+      final val = int.tryParse(mExplicit.group(1)!);
+      if (val != null && val >= 100 && val <= 15000) return val;
+    }
     final m = RegExp(r'(\d{3,4})\s*(?:м|метр|m)(?![а-яіїєґa-z])', caseSensitive: false).firstMatch(tLower);
     if (m != null) {
       final val = int.tryParse(m.group(1)!);
@@ -1279,30 +1284,20 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
         tLower.contains('дрон') ||
         tLower.contains('геран');
 
+    // Балістичний тригер: ТІЛЬКИ явні ракетні маркери, '!!!!' або суто ізольоване одне-два слова капсом ('УВАГА', 'ЦІЛЬ', 'ПУСК', 'ВИХОДИ', 'ШВИДКІСНА', 'БАЛІСТИКА') без населених пунктів
     final bool hasBallisticMarker = tLower.contains('швидкісна') ||
         tLower.contains('швидкісні') ||
         tLower.contains('виходи') ||
         tLower.contains('багато цілей') ||
         tLower.contains('цілей йде') ||
         tLower.contains('цілі йдуть') ||
-        tLower.contains('група цілей') ||
-        RegExp(r'(?:^|[\s\W_])(?:ЦІЛЬ|УВАГА!?|ПУСК|ВИХОДИ)(?:$|[\s\W_])').hasMatch(text) ||
         text.contains('!!!!') ||
-        (text.contains('!!') && text.trim().length <= 35) ||
-        tLower.contains('увага !!') ||
-        tLower.contains('увага!!');
+        RegExp(r'^(?:УВАГА|ЦІЛЬ|ПУСК|ВИХОДИ|ШВИДКІСНА|БАЛІСТИКА)[!\s⚠️]*$').hasMatch(text.trim());
 
-    if (tLower.contains('кинджал') || tLower.contains('циркон') || tLower.contains('гіперзвук')) {
-      return {'type': 'missile_hypersonic', 'speed': 12000.0, 'label': 'Гіперзвукова ракета'};
-    } else if (tLower.contains('баліст') || tLower.contains('іскандер') || tLower.contains('кн-23') || tLower.contains('kn-23') || tLower.contains('с-300') || tLower.contains('с-400') || tLower.contains('☄')) {
-      return {'type': 'missile_ballistic', 'speed': 5000.0, 'label': 'Балістична / Швидкісна ціль'};
-    } else if (!hasExplicitDrone && hasBallisticMarker) {
-      return {'type': 'missile_ballistic', 'speed': 5000.0, 'label': 'Балістична / Швидкісна ціль'};
-    } else if (tLower.contains('х-22') || tLower.contains('х-32') || tLower.contains('онікс') || tLower.contains('х-31') || tLower.contains('х-59') || tLower.contains('х-69')) {
-      return {'type': 'missile_supersonic', 'speed': 3200.0, 'label': 'Надзвукова ракета (Х-22/Онікс)'};
-    } else if (tLower.contains('крилат') || tLower.contains('х-101') || tLower.contains('калібр') || tLower.contains('іскандер-к') || (tLower.contains('ракет') && !tLower.contains('реактив'))) {
-      return {'type': 'missile_cruise', 'speed': 900.0, 'label': 'Крилата ракета'};
-    } else if (tLower.contains('каб') || tLower.contains('кар ') || tLower.contains('керован') || tLower.contains('уфаб')) {
+    // Якщо вказано висоту типову для БпЛА (300..5000 м) — це гарантовано не балістика
+    final bool hasUavAltitude = (altitudeMeters != null && altitudeMeters >= 300 && altitudeMeters <= 5000);
+
+    if (tLower.contains('каб') || tLower.contains('кар ') || tLower.contains('керован') || tLower.contains('уфаб')) {
       return {'type': 'kab', 'speed': 850.0, 'label': 'КАБ / КАР'};
     } else if (tLower.contains('на керуванні') || tLower.contains('🎮') || tLower.contains('сікер') || tLower.contains('оптичн') || tLower.contains('старлінк')) {
       return {'type': 'uav_guided', 'speed': 220.0, 'label': 'БпЛА на керуванні 🎮'};
@@ -1310,6 +1305,18 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
       return {'type': 'uav_recon', 'speed': 130.0, 'label': 'РозвідБпЛА 👁️', 'isCircling': true};
     } else if (tLower.contains('пародія') || tLower.contains('гербера') || tLower.contains('імітатор') || tLower.contains('фальш') || tLower.contains('пінопласт')) {
       return {'type': 'uav_decoy', 'speed': 160.0, 'label': 'Імітатор / Фальш-ціль'};
+    } else if (!hasUavAltitude) {
+      if (tLower.contains('кинджал') || tLower.contains('циркон') || tLower.contains('гіперзвук')) {
+        return {'type': 'missile_hypersonic', 'speed': 12000.0, 'label': 'Гіперзвукова ракета'};
+      } else if (tLower.contains('баліст') || tLower.contains('іскандер') || tLower.contains('кн-23') || tLower.contains('kn-23') || tLower.contains('с-300') || tLower.contains('с-400') || tLower.contains('☄')) {
+        return {'type': 'missile_ballistic', 'speed': 5000.0, 'label': 'Балістична / Швидкісна ціль'};
+      } else if (!hasExplicitDrone && hasBallisticMarker) {
+        return {'type': 'missile_ballistic', 'speed': 5000.0, 'label': 'Балістична / Швидкісна ціль'};
+      } else if (tLower.contains('х-22') || tLower.contains('х-32') || tLower.contains('онікс') || tLower.contains('х-31') || tLower.contains('х-59') || tLower.contains('х-69')) {
+        return {'type': 'missile_supersonic', 'speed': 3200.0, 'label': 'Надзвукова ракета (Х-22/Онікс)'};
+      } else if (tLower.contains('крилат') || tLower.contains('х-101') || tLower.contains('калібр') || tLower.contains('іскандер-к') || (tLower.contains('ракет') && !tLower.contains('реактив'))) {
+        return {'type': 'missile_cruise', 'speed': 900.0, 'label': 'Крилата ракета'};
+      }
     }
 
     bool highAlt = (altitudeMeters != null && altitudeMeters >= 4000);
@@ -3307,17 +3314,15 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
               final tLower = text.toLowerCase();
               final bool hasNegative = negativeMissileWords.any((nw) => tLower.contains(nw));
 
-              // Перевірка на тригери ракет / балістики (включно з короткими тривожними постами)
+              // Перевірка на тригери ракет / балістики: ТІЛЬКИ явні ракетні слова, '!!!!' або одне-два слова капсом без локацій
               final bool isExplicitBallisticTrigger = !hasNegative && (
                 missileKeywords.any((mk) => tLower.contains(mk)) ||
-                text.contains('УВАГА') ||
-                text.contains('ЦІЛЬ') ||
-                text.contains('ПУСК') ||
-                (text.trim().length <= 35 && text.contains('!!') && !tLower.contains('шахед') && !tLower.contains('бпла'))
+                RegExp(r'^(?:УВАГА|ЦІЛЬ|ПУСК|ВИХОДИ|ШВИДКІСНА|БАЛІСТИКА)[!\s⚠️]*$').hasMatch(text.trim()) ||
+                text.contains('!!!!')
               );
 
               if (isExplicitBallisticTrigger && msgTime != null) {
-                final windowEnd = msgTime.add(const Duration(minutes: 6));
+                final windowEnd = msgTime.add(const Duration(minutes: 4));
                 if (activeBallisticUntil == null || windowEnd.isAfter(activeBallisticUntil)) {
                   activeBallisticUntil = windowEnd;
                 }
@@ -4692,19 +4697,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   msgTextLower.contains('кружляє') ||
                                   msgTextLower.contains('геран');
 
-                              // а) коротке повідомлення капсом "УВАГА", "УВАГА!", "ЦІЛЬ", "ПУСК", "ВИХОДИ"
+                              // а) коротке повідомлення капсом РІВНО з одного або двох слів капсом без назв населених пунктів:
                               final trimmedText = rawMsgText.trim();
-                              final bool isShortCaps = trimmedText.length <= 15 && (
-                                  trimmedText == 'УВАГА' ||
-                                  trimmedText == 'УВАГА!' ||
-                                  trimmedText == 'УВАГА!!' ||
-                                  trimmedText == 'ЦІЛЬ' ||
-                                  trimmedText == 'ПУСК' ||
-                                  trimmedText == 'ВИХОДИ' ||
-                                  trimmedText.startsWith('УВАГА')
-                              );
+                              final bool isShortCaps = RegExp(r'^(?:УВАГА|ЦІЛЬ|ПУСК|ВИХОДИ|ШВИДКІСНА|БАЛІСТИКА)[!\s⚠️]*$').hasMatch(trimmedText);
 
-                              // б) повідомлення зі словами "баліст", "іскандер", "кинджал", "циркон", "с-300", "с-400", "х-101", "х-22", "х-32", "х-59", "х-69", "калібр", "онікс", "ракет", "швидкісна", "швидкісні", "виходи", "багато цілей"
+                              // б) повідомлення зі словами "баліст", "іскандер", "кинджал", "циркон", "с-300", "с-400", "х-101", "х-22", "х-32", "х-59", "х-69", "калібр", "онікс", "ракет", "швидкісна", "швидкісні", "виходи", "багато цілей", "цілей йде", "цілі йдуть"
                               final bool isExplicitBallisticWord = msgTextLower.contains('баліст') ||
                                   msgTextLower.contains('іскандер') ||
                                   msgTextLower.contains('кинджал') ||
@@ -4724,25 +4721,19 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   msgTextLower.contains('виходи') ||
                                   msgTextLower.contains('багато цілей') ||
                                   msgTextLower.contains('цілей йде') ||
-                                  msgTextLower.contains('цілі йдуть') ||
-                                  msgTextLower.contains('група цілей');
+                                  msgTextLower.contains('цілі йдуть');
 
-                              // в) окреме коротке повідомлення капсом 'ЦІЛЬ' чи 'УВАГА' чи з '!!' (щонайменше два знаки оклику)
-                              final bool isShortUrgentAlert = (rawMsgText.length <= 35 &&
-                                  (rawMsgText.contains('!!') || rawMsgText.contains('⚠️')) &&
-                                  !hasExplicitDroneInMsg) ||
-                                  (rawMsgText.trim().length <= 25 &&
-                                      (rawMsgText.toUpperCase().contains('ЦІЛЬ') || rawMsgText.toUpperCase().contains('УВАГА')) &&
-                                      !hasExplicitDroneInMsg);
+                              // в) наявність 4 знаків оклику поспіль '!!!!'
+                              final bool hasFourExclamations = rawMsgText.contains('!!!!');
 
-                              final bool isMissileTrigger = isShortCaps || isExplicitBallisticWord || isShortUrgentAlert;
+                              final bool isMissileTrigger = (isShortCaps || isExplicitBallisticWord || hasFourExclamations) && !hasExplicitDroneInMsg;
 
                               if (isMissileTrigger) {
                                 activeBallisticOrMissileContext = true;
                                 missileContextTime = msgTime;
                               }
 
-                              if (missileContextTime != null && msgTime.difference(missileContextTime).inMinutes.abs() > 6) {
+                              if (missileContextTime != null && msgTime.difference(missileContextTime).inMinutes.abs() > 4) {
                                 activeBallisticOrMissileContext = false;
                               }
 
@@ -5173,6 +5164,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     msgTextLower.contains('низько');
 
                                 if (alt != null || isDescKeyword) {
+                                  if (alt != null) {
+                                    activeBallisticOrMissileContext = false;
+                                  }
                                   final msgChannel = msg['channel'];
                                   Map<String, dynamic>? targetThreat;
                                   for (int ti = threats.length - 1; ti >= 0; ti--) {
@@ -5187,6 +5181,17 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     }
                                   }
 
+                                  if (targetThreat == null && threats.isNotEmpty) {
+                                    for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                      final candidate = threats[ti];
+                                      final candTime = candidate['lastUpdated'] as DateTime?;
+                                      if (candTime != null && msgTime.difference(candTime).inMinutes.abs() <= 3) {
+                                        targetThreat = candidate;
+                                        break;
+                                      }
+                                    }
+                                  }
+
                                   if (targetThreat != null) {
                                     if (alt != null) {
                                       final prevAlt = targetThreat['altitudeMeters'] as int?;
@@ -5195,6 +5200,19 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       }
                                       targetThreat['altitudeMeters'] = alt;
                                       targetThreat['altitude'] = '$alt м';
+
+                                      // Якщо targetThreat мав помилковий тип 'missile_ballistic', змінюємо на БпЛА зі швидкістю 185
+                                      if (targetThreat['type'] == 'missile_ballistic') {
+                                        if (alt < 3500) {
+                                          targetThreat['type'] = 'shahed';
+                                          targetThreat['label'] = 'Шахед / БпЛА';
+                                          targetThreat['speed'] = 185.0;
+                                        } else {
+                                          targetThreat['type'] = 'shahed_jet';
+                                          targetThreat['label'] = 'Реактивний БпЛА';
+                                          targetThreat['speed'] = 185.0;
+                                        }
+                                      }
                                     } else if (isDescKeyword) {
                                       targetThreat['isDescending'] = true;
                                     }
