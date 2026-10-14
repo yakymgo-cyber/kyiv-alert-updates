@@ -938,8 +938,8 @@ List<String> _dynamicExtraChannels = [];
 List<String> _dynamicDangerKeywords = [];
 List<String> _dynamicClearKeywords = [];
 
-const int kCurrentVersionCode = 9;
-const String kCurrentVersionName = '1.2.6';
+const int kCurrentVersionCode = 10;
+const String kCurrentVersionName = '1.2.7';
 
 class RemoteConfig {
   final int versionCode;
