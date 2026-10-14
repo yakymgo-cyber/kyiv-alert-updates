@@ -1,6 +1,6 @@
 import os
 
-script_content = '''param (
+script_content = r'''param (
     [string]$Changelog = "Оновлення радара та бази локацій"
 )
 
@@ -36,7 +36,7 @@ if (-not (Test-Path $mainDartPath)) {
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $mainDartContent = [System.IO.File]::ReadAllText($mainDartPath, [System.Text.Encoding]::UTF8)
 
-$currentCodeMatch = [regex]::Match($mainDartContent, 'const int kCurrentVersionCode = (\\d+);')
+$currentCodeMatch = [regex]::Match($mainDartContent, 'const int kCurrentVersionCode = (\d+);')
 $currentNameMatch = [regex]::Match($mainDartContent, "const String kCurrentVersionName = '([^']+)';")
 
 if (-not $currentCodeMatch.Success) {
@@ -59,7 +59,7 @@ if ($parts.Length -eq 3) {
 Write-Host "Оновлення версії: $oldName (Build $oldCode) -> $newName (Build $newCode)" -ForegroundColor Green
 
 # Оновлення frontend/lib/main.dart
-$mainDartContent = [regex]::Replace($mainDartContent, 'const int kCurrentVersionCode = \\d+;', "const int kCurrentVersionCode = $newCode;")
+$mainDartContent = [regex]::Replace($mainDartContent, 'const int kCurrentVersionCode = \d+;', "const int kCurrentVersionCode = $newCode;")
 $mainDartContent = [regex]::Replace($mainDartContent, "const String kCurrentVersionName = '[^']+';", "const String kCurrentVersionName = '$newName';")
 [System.IO.File]::WriteAllText($mainDartPath, $mainDartContent, $utf8NoBom)
 
@@ -67,7 +67,7 @@ $mainDartContent = [regex]::Replace($mainDartContent, "const String kCurrentVers
 $pubspecPath = Join-Path $rootDir "frontend/pubspec.yaml"
 if (Test-Path $pubspecPath) {
     $pubspecContent = [System.IO.File]::ReadAllText($pubspecPath, [System.Text.Encoding]::UTF8)
-    $pubspecContent = [regex]::Replace($pubspecContent, 'version:\\s*\\d+\\.\\d+\\.\\d+\\+\\d+', "version: $newName+$newCode")
+    $pubspecContent = [regex]::Replace($pubspecContent, 'version:\s*\d+\.\d+\.\d+\+\d+', "version: $newName+$newCode")
     [System.IO.File]::WriteAllText($pubspecPath, $pubspecContent, $utf8NoBom)
 }
 
@@ -75,8 +75,8 @@ if (Test-Path $pubspecPath) {
 $backendMainPath = Join-Path $rootDir "backend/main.py"
 if (Test-Path $backendMainPath) {
     $backendMainContent = [System.IO.File]::ReadAllText($backendMainPath, [System.Text.Encoding]::UTF8)
-    $backendMainContent = [regex]::Replace($backendMainContent, '\"version_code\":\\s*\\d+,', "`\"version_code`\": $newCode,")
-    $backendMainContent = [regex]::Replace($backendMainContent, '\"version_name\":\\s*\"[^\"]+\",', "`\"version_name`\": `\"$newName`\",")
+    $backendMainContent = [regex]::Replace($backendMainContent, '"version_code":\s*\d+,', """version_code"": $newCode,")
+    $backendMainContent = [regex]::Replace($backendMainContent, '"version_name":\s*"[^"]+",', """version_name"": ""$newName"",")
     [System.IO.File]::WriteAllText($backendMainPath, $backendMainContent, $utf8NoBom)
 }
 

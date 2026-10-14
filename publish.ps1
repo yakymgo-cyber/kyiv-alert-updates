@@ -8,9 +8,9 @@ $rootDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 Set-Location $rootDir
 
 # Забезпечуємо доступність Git та GitHub CLI
-if (Test-Path "C:lutterin\mingit\cmd\git.exe") {
-    $env:PATH = "C:lutterin\mingit\cmd;" + $env:PATH
-    Set-Alias -Name git -Value "C:lutterin\mingit\cmd\git.exe" -Scope Global -ErrorAction SilentlyContinue
+if (Test-Path "C:\flutter\bin\mingit\cmd\git.exe") {
+    $env:PATH = "C:\flutter\bin\mingit\cmd;" + $env:PATH
+    Set-Alias -Name git -Value "C:\flutter\bin\mingit\cmd\git.exe" -Scope Global -ErrorAction SilentlyContinue
 }
 if (Test-Path "C:\Program Files\GitHub CLI\gh.exe") {
     $env:PATH = "C:\Program Files\GitHub CLI;" + $env:PATH
@@ -73,8 +73,8 @@ if (Test-Path $pubspecPath) {
 $backendMainPath = Join-Path $rootDir "backend/main.py"
 if (Test-Path $backendMainPath) {
     $backendMainContent = [System.IO.File]::ReadAllText($backendMainPath, [System.Text.Encoding]::UTF8)
-    $backendMainContent = [regex]::Replace($backendMainContent, '"version_code":\s*\d+,', "`"version_code`": $newCode,")
-    $backendMainContent = [regex]::Replace($backendMainContent, '"version_name":\s*"[^"]+",', "`"version_name`": `"$newName`",")
+    $backendMainContent = [regex]::Replace($backendMainContent, '"version_code":\s*\d+,', """version_code"": $newCode,")
+    $backendMainContent = [regex]::Replace($backendMainContent, '"version_name":\s*"[^"]+",', """version_name"": ""$newName"",")
     [System.IO.File]::WriteAllText($backendMainPath, $backendMainContent, $utf8NoBom)
 }
 
@@ -108,7 +108,7 @@ $repoOwner = "yakymgo-cyber"
 $repoName = "kyiv-alert-updates"
 try {
     $remoteUrl = (& git config --get remote.origin.url).Trim()
-    if ($remoteUrl -match 'github\.com[:/]([^/]+)/([^/\.]+)(?:\.git)?') {
+    if ($remoteUrl -match 'github\\.com[:/]([^/]+)/([^/\\.]+)(?:\\.git)?') {
         $repoOwner = $matches[1]
         $repoName = $matches[2]
     }
