@@ -10,17 +10,13 @@ $rootDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 Set-Location $rootDir
 
 # Забезпечуємо доступність Git та GitHub CLI
-if (Test-Path "C:\\flutter\\bin\\mingit\\cmd\\git.exe") {
-    Set-Alias -Name git -Value "C:\\flutter\\bin\\mingit\\cmd\\git.exe" -Scope Global -ErrorAction SilentlyContinue
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        $env:PATH = "C:\\flutter\\bin\\mingit\\cmd;" + $env:PATH
-    }
+if (Test-Path "C:\flutter\bin\mingit\cmd\git.exe") {
+    $env:PATH = "C:\flutter\bin\mingit\cmd;" + $env:PATH
+    Set-Alias -Name git -Value "C:\flutter\bin\mingit\cmd\git.exe" -Scope Global -ErrorAction SilentlyContinue
 }
-if (Test-Path "C:\\Program Files\\GitHub CLI\\gh.exe") {
-    Set-Alias -Name gh -Value "C:\\Program Files\\GitHub CLI\\gh.exe" -Scope Global -ErrorAction SilentlyContinue
-    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-        $env:PATH = "C:\\Program Files\\GitHub CLI;" + $env:PATH
-    }
+if (Test-Path "C:\Program Files\GitHub CLI\gh.exe") {
+    $env:PATH = "C:\Program Files\GitHub CLI;" + $env:PATH
+    Set-Alias -Name gh -Value "C:\Program Files\GitHub CLI\gh.exe" -Scope Global -ErrorAction SilentlyContinue
 }
 
 # Встановлюємо змінну середовища для Flutter (Windows)
