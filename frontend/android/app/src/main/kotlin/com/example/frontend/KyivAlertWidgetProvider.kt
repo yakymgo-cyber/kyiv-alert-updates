@@ -38,8 +38,8 @@ class KyivAlertWidgetProvider : AppWidgetProvider() {
     companion object {
         private const val TAG = "KyivAlertWidget"
         private const val PREFS_NAME = "kyiv_alert_widget"
-        private const val MAX_BITMAP_WIDTH = 480
-        private const val MAX_BITMAP_HEIGHT = 340
+        private const val MAX_BITMAP_WIDTH = 440
+        private const val MAX_BITMAP_HEIGHT = 300
 
         fun updateAllWidgets(context: Context) {
             try {
@@ -145,14 +145,14 @@ class KyivAlertWidgetProvider : AppWidgetProvider() {
                     }
                     val rawBitmap = BitmapFactory.decodeFile(imageFile.absolutePath, options)
                     if (rawBitmap != null) {
-                        // Enforce max dimensions 480x340 px
+                        // Enforce max dimensions 440x300 px
                         val scaledBitmap = if (rawBitmap.width > MAX_BITMAP_WIDTH || rawBitmap.height > MAX_BITMAP_HEIGHT) {
                             Bitmap.createScaledBitmap(rawBitmap, MAX_BITMAP_WIDTH, MAX_BITMAP_HEIGHT, true)
                         } else {
                             rawBitmap
                         }
 
-                        // Ensure RGB_565 format (~326 KB) to avoid TransactionTooLargeException
+                        // Ensure RGB_565 format (< 550 KB) to avoid TransactionTooLargeException
                         val finalBitmap = if (scaledBitmap.config != Bitmap.Config.RGB_565) {
                             try {
                                 val rgb565 = Bitmap.createBitmap(scaledBitmap.width, scaledBitmap.height, Bitmap.Config.RGB_565)
@@ -169,6 +169,39 @@ class KyivAlertWidgetProvider : AppWidgetProvider() {
                         views.setImageViewBitmap(R.id.widget_radar_image, finalBitmap)
                         return
                     }
+                }
+
+                // Fallback: якщо radar_snapshot.png відсутній або пошкоджений — генеруємо нативний радарний Bitmap 440x300 px
+                try {
+                    val fallbackBitmap = RadarBitmapRenderer.render(
+                        context,
+                        emptyList(),
+                        emptyList(),
+                        false,
+                        "БЕЗПЕЧНО",
+                        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+                    )
+                    val scaledFallback = if (fallbackBitmap.width > MAX_BITMAP_WIDTH || fallbackBitmap.height > MAX_BITMAP_HEIGHT) {
+                        Bitmap.createScaledBitmap(fallbackBitmap, MAX_BITMAP_WIDTH, MAX_BITMAP_HEIGHT, true)
+                    } else {
+                        fallbackBitmap
+                    }
+                    val finalFallback = if (scaledFallback.config != Bitmap.Config.RGB_565) {
+                        try {
+                            val rgb565 = Bitmap.createBitmap(scaledFallback.width, scaledFallback.height, Bitmap.Config.RGB_565)
+                            val c = Canvas(rgb565)
+                            c.drawBitmap(scaledFallback, 0f, 0f, null)
+                            rgb565
+                        } catch (t: Throwable) {
+                            scaledFallback
+                        }
+                    } else {
+                        scaledFallback
+                    }
+                    views.setImageViewBitmap(R.id.widget_radar_image, finalFallback)
+                    return
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Fallback RadarBitmapRenderer failed", t)
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "Error decoding radar snapshot bitmap", t)

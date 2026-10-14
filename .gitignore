@@ -27,5 +27,6 @@ backend/bot_session.session*
 # Context dumps & large APK binaries
 context.txt
 code_only_context.txt
+audit_bundle.txt
 *.apk
 

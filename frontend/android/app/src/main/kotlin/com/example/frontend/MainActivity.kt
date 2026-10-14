@@ -70,8 +70,8 @@ class MainActivity : FlutterActivity() {
                                 val file = File(filesDir, "radar_snapshot.png")
                                 val rawBitmap = BitmapFactory.decodeByteArray(radarPng, 0, radarPng.size)
                                 if (rawBitmap != null) {
-                                    val scaledBitmap = if (rawBitmap.width > 480 || rawBitmap.height > 340) {
-                                        Bitmap.createScaledBitmap(rawBitmap, 480, 340, true)
+                                    val scaledBitmap = if (rawBitmap.width > 440 || rawBitmap.height > 300) {
+                                        Bitmap.createScaledBitmap(rawBitmap, 440, 300, true)
                                     } else {
                                         rawBitmap
                                     }
@@ -85,18 +85,22 @@ class MainActivity : FlutterActivity() {
                                         fos.flush()
                                     }
                                 }
-                            } catch (e: Exception) {
+                            } catch (e: Throwable) {
                                 e.printStackTrace()
                             }
                         } else {
-                            RadarBitmapRenderer.render(
-                                applicationContext,
-                                threats,
-                                watchedLocations,
-                                isAlert,
-                                statusTitle,
-                                updatedTime
-                            )
+                            try {
+                                RadarBitmapRenderer.render(
+                                    applicationContext,
+                                    threats,
+                                    watchedLocations,
+                                    isAlert,
+                                    statusTitle,
+                                    updatedTime
+                                )
+                            } catch (e: Throwable) {
+                                e.printStackTrace()
+                            }
                         }
 
                         // Оновлення віджетів на робочому столі

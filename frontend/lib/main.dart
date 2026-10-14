@@ -350,9 +350,10 @@ const Set<String> _kExternalBorderKeys = {
 };
 
 const Set<String> _kFarRegions = {
-  'луцьк', 'хмель', 'кременчук', 'одещин', 'одес', 'запоріж', 'дніпр', 'харків',
-  'львів', 'рівн', 'терноп', 'франківськ', 'волин', 'миколаїв', 'херсон', 'сум',
-  'кропивницьк', 'кіровоград', 'полтавськ', 'чернівц', 'закарпат',
+  'луцьк', 'хмель', 'хмельницьк', 'кременчук', 'одещин', 'одес', 'запоріж', 'дніпр', 'харків',
+  'львів', 'рівн', 'рівнен', 'терноп', 'франківськ', 'волин', 'миколаїв', 'херсон', 'сум',
+  'кропивницьк', 'кіровоград', 'полтавськ', 'полтав', 'чернівц', 'закарпат',
+  'вінниц', 'вінниччин', 'черкас', 'черкащин', 'житомир', 'чернігів',
 };
 
 const _kBaseKyivLocations = <String, (double, double, String)>{
@@ -929,6 +930,7 @@ void _checkAndAutoGeocodeLocations(String text) {
     if (!_kKyivLocations.containsKey(stem) && !_pendingOrFailedGeocodes.contains(stem)) {
       _pendingOrFailedGeocodes.add(stem);
       _autoGeocodeLocation(rawWord, stem);
+      break; // Максимум 1 нове геокодування за один прохід для захисту від бану Nominatim (1 запит/сек)
     }
   }
 }
@@ -1049,14 +1051,14 @@ class RemoteConfigNotifier extends Notifier<RemoteConfig> {
   Future<void> _fetchRemoteConfig() async {
     final urls = [
       'https://raw.githubusercontent.com/yakymgo-cyber/kyiv-alert-updates/main/remote_config.json',
-      'https://raw.githubusercontent.com/yakymgo-cyber/kyiv-alert-updates/cde2f53bdfb698ee02122fa2325b73cbb7e8fa52/remote_config.json',
-      'http://192.168.0.101:8000/api/config',
-      'http://10.0.2.2:8000/api/config',
     ];
 
     for (final url in urls) {
       try {
-        final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 4));
+        final response = await http.get(
+          Uri.parse(url),
+          headers: {'Cache-Control': 'no-cache', 'Pragma': 'no-cache'},
+        ).timeout(const Duration(seconds: 5));
         if (response.statusCode == 200) {
           final jsonMap = json.decode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
           final cfg = RemoteConfig.fromJson(jsonMap);
@@ -1245,44 +1247,15 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
     final textWithoutReply = text.replaceAll(RegExp(r'^↪️.*?\n'), '');
     final tLower = textWithoutReply.toLowerCase();
 
-    // Check for "в зону"
-    final inZoneMatch = RegExp(r'(?:^|[\s\W_])(?:([1-9]|кілька|багато)\s*(?:х|x|шт|штук|шт\.)?\s*)?(?:в|у)\s*(?:зону|відповідальність|наш сектор|простір)', caseSensitive: false).firstMatch(tLower);
-    if (inZoneMatch != null) {
-      int quantity = 1;
-      if (inZoneMatch.group(1) != null) {
-         final qStr = inZoneMatch.group(1)!;
-         if (qStr == 'кілька' || qStr == 'багато') {
-            quantity = 3;
-         } else {
-            quantity = int.tryParse(qStr) ?? 1;
-         }
-      }
-      final List<Map<String, dynamic>> parsed = [];
-      for (int i = 0; i < quantity; i++) {
-        parsed.add({
-          'path': <LatLng>[],
-          'route': 'В зоні відповідальності',
-          'speed': globalThreat['speed'] ?? 185.0,
-          'type': globalThreat['type'] ?? 'shahed',
-          'label': globalThreat['label'] ?? 'Ударний БпЛА (Шахед)',
-          'altitude': globalAlt != null ? '$globalAlt м' : null,
-          'altitudeMeters': globalAlt,
-          'isCircling': globalThreat['isCircling'] == true,
-          'isDescending': globalAlt != null && globalAlt <= 1500,
-        });
-      }
-      return parsed;
-    }
-
     final bool hasMultipleDrones = RegExp(r'(?:^|\s)(?:[1-9]\s*(?:х|x|шт)?|ще один|кілька|групи|декілька|шахеди|бпла|цілі)(?:\s|$)').hasMatch(tLower);
-    final bool hasSplitters = text.contains(' та ') || text.contains(' і ') || text.contains(',');
+    final bool hasSplitters = textWithoutReply.contains(' та ') || textWithoutReply.contains(' і ') || textWithoutReply.contains(',');
     List<String> lines = [];
-    if (hasMultipleDrones && hasSplitters && !text.toLowerCase().contains('через')) {
-      lines = text.replaceAll(' та ', '\n').replaceAll(' і ', '\n').replaceAll(',', '\n').split('\n');
-    } else if (hasMultipleDrones) {
-      lines = text.split('\n');
-    } else {
-      lines = [text.replaceAll('\n', ' ')];
+    for (final rawLine in textWithoutReply.split('\n')) {
+      if (hasMultipleDrones && hasSplitters && !rawLine.toLowerCase().contains('через')) {
+        lines.addAll(rawLine.replaceAll(' та ', '\n').replaceAll(' і ', '\n').replaceAll(',', '\n').split('\n'));
+      } else {
+        lines.add(rawLine);
+      }
     }
     final List<Map<String, dynamic>> parsed = [];
     const negations = ['не йде', 'не летить', 'не фіксується', 'немає', 'відбій', 'чисто'];
@@ -1293,25 +1266,22 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
       final lineLower = ' ${stripped.toLowerCase()} ';
       if (negations.any((n) => lineLower.contains(n))) continue;
 
-      // 2. Фільтр іногородніх рядків у багаторядкових зведеннях
+      // 2. Фільтр сусідніх та далеких регіонів
+      const neighborOblastKeys = {'житомирщин', 'чернігівщин', 'черкащин', 'вінниччин', 'полтавщин'};
+      final bool hasNeighborOblast = neighborOblastKeys.any((r) => lineLower.contains(r));
       final bool hasFarRegion = _kFarRegions.any((r) => lineLower.contains(r));
-      final bool hasKyivAnchorInLine = lineLower.contains('київ') ||
-          lineLower.contains('київщин') ||
-          lineLower.contains('бровар') ||
-          lineLower.contains('борисп') ||
-          lineLower.contains('обухів') ||
-          lineLower.contains('біла церкв') ||
-          lineLower.contains('васильків') ||
-          lineLower.contains('фастів') ||
-          lineLower.contains('вишгород') ||
-          lineLower.contains('буч') ||
-          lineLower.contains('ірпін') ||
-          lineLower.contains('іванків') ||
-          lineLower.contains('славутич') ||
-          lineLower.contains('чзв') ||
-          lineLower.contains('в зону');
 
-      if (hasFarRegion && !hasKyivAnchorInLine) {
+      // Для ключів сусідніх областей дозволяємо рядок ТІЛЬКИ тоді, коли в цьому ж самому рядку (line) є конкретне місто/село Київської області (не просто слово "київщина", а реальний населений пункт із _kKyivLocations, що не входить у _kExternalBorderKeys)
+      final bool hasConcreteKyivLocInLine = _kKyivLocations.keys.any((k) =>
+        !_kExternalBorderKeys.contains(k) &&
+        k != 'київщин' &&
+        lineLower.contains(k)
+      );
+
+      if (hasNeighborOblast && !hasConcreteKyivLocInLine) {
+        continue;
+      }
+      if (hasFarRegion && !hasConcreteKyivLocInLine) {
         continue;
       }
 
@@ -1354,7 +1324,7 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
 
       // 1. Жорстке правило прив'язки до Київщини (Border & Neighbor Regions Filter):
       final bool hasInternalKyivLoc = rawLocs.any((item) => !_kExternalBorderKeys.contains(item.$3));
-      if (!hasInternalKyivLoc && !hasKyivAnchorInLine) {
+      if (!hasInternalKyivLoc) {
         continue;
       }
 
@@ -1554,6 +1524,38 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
           'altitudeMeters': lineAlt,
           'isDescending': isDescending,
         });
+      }
+    }
+
+    // 3. Блок "в зону" виконується ТІЛЬКИ якщо не знайдено жодного конкретного населеного пункту (parsed.isEmpty)
+    if (parsed.isEmpty) {
+      final inZoneMatch = RegExp(
+        r'(?:^|[\s\W_])(?:([1-9]|кілька|багато)\s*(?:х|x|шт|штук|шт\.)?\s*)?(?:в|у)\s*(?:зону|відповідальність|наш сектор)',
+        caseSensitive: false,
+      ).firstMatch(tLower);
+      if (inZoneMatch != null) {
+        int quantity = 1;
+        if (inZoneMatch.group(1) != null) {
+          final qStr = inZoneMatch.group(1)!;
+          if (qStr == 'кілька' || qStr == 'багато') {
+            quantity = 3;
+          } else {
+            quantity = int.tryParse(qStr) ?? 1;
+          }
+        }
+        for (int i = 0; i < quantity; i++) {
+          parsed.add({
+            'path': <LatLng>[],
+            'route': 'В зоні відповідальності',
+            'speed': globalThreat['speed'] ?? 185.0,
+            'type': globalThreat['type'] ?? 'shahed',
+            'label': globalThreat['label'] ?? 'Ударний БпЛА (Шахед)',
+            'altitude': globalAlt != null ? '$globalAlt м' : null,
+            'altitudeMeters': globalAlt,
+            'isCircling': globalThreat['isCircling'] == true,
+            'isDescending': globalAlt != null && globalAlt <= 1500,
+          });
+        }
       }
     }
     return parsed;
@@ -2499,28 +2501,34 @@ class _MainScreenState extends ConsumerState<MainScreen> {
       }
 
       final client = http.Client();
-      final request = http.Request('GET', Uri.parse(apkUrl));
-      final response = await client.send(request);
+      try {
+        final request = http.Request('GET', Uri.parse(apkUrl));
+        final response = await client.send(request);
 
-      if (response.statusCode != 200) {
-        throw Exception('Сервер повернув код ${response.statusCode}');
-      }
-
-      final totalBytes = response.contentLength ?? 0;
-      int receivedBytes = 0;
-      final sink = apkFile.openWrite();
-
-      await for (final chunk in response.stream) {
-        sink.add(chunk);
-        receivedBytes += chunk.length;
-        if (totalBytes > 0 && mounted) {
-          setState(() {
-            _downloadProgress = (receivedBytes / totalBytes).clamp(0.0, 1.0);
-          });
+        if (response.statusCode != 200) {
+          throw Exception('Сервер повернув код ${response.statusCode}');
         }
+
+        final totalBytes = response.contentLength ?? 0;
+        int receivedBytes = 0;
+        final sink = apkFile.openWrite();
+        try {
+          await for (final chunk in response.stream) {
+            sink.add(chunk);
+            receivedBytes += chunk.length;
+            if (totalBytes > 0 && mounted) {
+              setState(() {
+                _downloadProgress = (receivedBytes / totalBytes).clamp(0.0, 1.0);
+              });
+            }
+          }
+          await sink.flush();
+        } finally {
+          await sink.close();
+        }
+      } finally {
+        client.close();
       }
-      await sink.flush();
-      await sink.close();
 
       if (mounted) {
         setState(() {
@@ -4722,7 +4730,7 @@ class _MainScreenState extends ConsumerState<MainScreen> {
                                           existing['route'] = existingNames.isNotEmpty ? existingNames.join(' → ') : existing['route'];
                                           if (isExitingOblast) {
                                             if (existing['route'] != null && !existing['route'].toString().contains('(Вихід з області)')) {
-                                              existing['route'] = ' (Вихід з області)';
+                                              existing['route'] = '${existing['route']} (Вихід з області)';
                                             }
                                             existing['isExitingOblast'] = true;
                                             existing['ttl'] = 45;
@@ -4755,7 +4763,7 @@ class _MainScreenState extends ConsumerState<MainScreen> {
                                   if (!mergedIntoExisting) {
                                     String initialRoute = t['route'] ?? (locNames.isNotEmpty ? locNames.join(' → ') : 'Київський сектор');
                                     if (isExitingOblast && !initialRoute.contains('(Вихід з області)')) {
-                                      initialRoute = ' (Вихід з області)';
+                                      initialRoute = '$initialRoute (Вихід з області)';
                                     }
                                     threats.add({
                                       'type': rawType,
@@ -4951,6 +4959,12 @@ class _MainScreenState extends ConsumerState<MainScreen> {
                                 // Якщо ми знайшли повідомлення про відбій / зняття цілі раніше, ніж знайшли саме повідомлення про загрозу, значить загроза вже скасована!
                                 if (isClearMsg && (txt.contains('баліст') || txt.contains('ракет') || txt.contains('міг') || txt.contains('кинджал') || !txt.contains('бпла'))) {
                                   break;
+                                }
+
+                                // Захист статусу hasMissiles від помилкового спрацьовування на відбої та реактивні БпЛА
+                                const missileNegations = ['не підтверд', 'не фіксу', 'хибн', 'відбій', 'чисто', 'реактив', 'шахед', 'бпла'];
+                                if (missileNegations.any((neg) => txt.contains(neg))) {
+                                  continue;
                                 }
 
                                 if (txt.contains('міг') || txt.contains('mig') || txt.contains('кинджал') || txt.contains('кинжал')) {

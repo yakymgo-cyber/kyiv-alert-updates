@@ -494,6 +494,55 @@ void main() {
       expect(threats.first['path'].first['name'], contains('Васильків'));
     });
   });
+
+  group('7 Bug Fixes Verification Tests', () {
+    final notifier = MessagesNotifier();
+
+    test('Multiline message splitting preserves individual line context without mixing', () {
+      const msg = 'Шахед курсом на Бориспіль\nРакета через Білу Церкву';
+      final threats = notifier.parseLocalThreats(msg);
+      expect(threats.length, greaterThanOrEqualTo(2));
+      final names = threats.map((t) => (t['path'] as List).map((p) => p['name'].toString()).join(' ')).toList();
+      expect(names.any((n) => n.contains('Бориспіль')), isTrue);
+      expect(names.any((n) => n.contains('Біла Церква')), isTrue);
+    });
+
+    test('Neighboring oblast is ignored when no Kyiv location is present', () {
+      const msg = 'Шахед на Житомирщині курсом на схід';
+      final threats = notifier.parseLocalThreats(msg);
+      expect(threats.isEmpty, isTrue);
+    });
+
+    test('Neighboring oblast is allowed when concrete Kyiv location is present in the line', () {
+      const msg = 'Шахед з Житомирщини курсом на Макарів';
+      final threats = notifier.parseLocalThreats(msg);
+      expect(threats.isNotEmpty, isTrue);
+      final hasMakariv = (threats.first['path'] as List).any((p) => p['name'].toString().contains('Макарів'));
+      expect(hasMakariv, isTrue);
+    });
+
+    test('Far regions like Вінниця or Черкаси are ignored without Kyiv location', () {
+      const msg = 'БпЛА над Вінницею та Черкасами';
+      final threats = notifier.parseLocalThreats(msg);
+      expect(threats.isEmpty, isTrue);
+    });
+
+    test('inZoneMatch only triggers when parsed is empty and does not trigger on generic "простір"', () {
+      // Concrete location present -> should NOT use "В зоні відповідальності"
+      final concrete = notifier.parseLocalThreats('2х шахедів в зону на Васильків');
+      expect(concrete.isNotEmpty, isTrue);
+      expect(concrete.first['route'], isNot(equals('В зоні відповідальності')));
+
+      // No location, "в зону" -> should trigger
+      final inZone = notifier.parseLocalThreats('2х шахедів заходять в зону');
+      expect(inZone.isNotEmpty, isTrue);
+      expect(inZone.first['route'], equals('В зоні відповідальності'));
+
+      // "простір" alone should NOT trigger inZoneMatch
+      final space = notifier.parseLocalThreats('Залітають у повітряний простір');
+      expect(space.isEmpty, isTrue);
+    });
+  });
 }
 
 

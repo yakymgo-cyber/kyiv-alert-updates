@@ -299,19 +299,31 @@ object RadarBitmapRenderer {
         canvas.drawText("KYIV AIR DEFENSE TACTICAL RADAR", 16f, (HEIGHT - 16).toFloat(), footerPaint)
         canvas.drawText("МАСШТАБ 1:65 KM", (WIDTH - 130).toFloat(), (HEIGHT - 16).toFloat(), footerPaint)
 
-        // Save Bitmap to filesDir/radar_snapshot.png (scaled to max 480x340 px for widget Binder IPC safety)
+        // Save Bitmap to filesDir/radar_snapshot.png (scaled to max 440x300 px in RGB_565 for widget Binder IPC safety)
         try {
             val file = File(context.filesDir, "radar_snapshot.png")
-            val scaledBitmap = if (bitmap.width > 480 || bitmap.height > 340) {
-                Bitmap.createScaledBitmap(bitmap, 480, 340, true)
+            val scaledBitmap = if (bitmap.width > 440 || bitmap.height > 300) {
+                Bitmap.createScaledBitmap(bitmap, 440, 300, true)
             } else {
                 bitmap
             }
+            val rgb565 = if (scaledBitmap.config != Bitmap.Config.RGB_565) {
+                try {
+                    val converted = Bitmap.createBitmap(scaledBitmap.width, scaledBitmap.height, Bitmap.Config.RGB_565)
+                    val c = Canvas(converted)
+                    c.drawBitmap(scaledBitmap, 0f, 0f, null)
+                    converted
+                } catch (t: Throwable) {
+                    scaledBitmap
+                }
+            } else {
+                scaledBitmap
+            }
             FileOutputStream(file).use { fos ->
-                scaledBitmap.compress(Bitmap.CompressFormat.PNG, 90, fos)
+                rgb565.compress(Bitmap.CompressFormat.PNG, 90, fos)
                 fos.flush()
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             e.printStackTrace()
         }
 
