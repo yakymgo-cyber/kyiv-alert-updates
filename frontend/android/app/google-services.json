@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "540836648119",
+    "project_id": "uakyivalertmonitor",
+    "storage_bucket": "uakyivalertmonitor.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:540836648119:android:d32a87a47b13b763d3a932",
+        "android_client_info": {
+          "package_name": "ua.kyiv.alert.monitor"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDAn9hyejAZx7C921qHR-2tTmJk-pEolVA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:540836648119:android:d32a87a47b13b763d3a932",
+        "android_client_info": {
+          "package_name": "com.example.frontend"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDAn9hyejAZx7C921qHR-2tTmJk-pEolVA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

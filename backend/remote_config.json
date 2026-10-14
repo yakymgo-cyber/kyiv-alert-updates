@@ -1,8 +1,8 @@
 {
-  "version_code": 13,
-  "version_name": "1.2.10",
-  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.10/app-release.apk",
-  "changelog": "Виправлення підрахунку ракет у ранковому брифінгу та декодер HTML новин ДТЕК/Київпастранс",
+  "version_code": 14,
+  "version_name": "1.2.11",
+  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.11/app-release.apk",
+  "changelog": "Підключення Firebase Core та Firebase Analytics, налаштування Google Services",
   "extra_locations": {
     "новосілки": {
       "lat": 50.3547,

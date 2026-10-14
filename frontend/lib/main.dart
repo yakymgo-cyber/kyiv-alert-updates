@@ -11,11 +11,25 @@ import 'desktop_map_wrapper.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_analytics/firebase_analytics.dart';
 
 String _staticTestModeTime = DateTime.now().toUtc().toIso8601String();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Ініціалізація Firebase
+  try {
+    await Firebase.initializeApp();
+    
+    // Створення екземпляра Analytics (за бажанням можна логувати кастомні події)
+    // ignore: unused_local_variable
+    FirebaseAnalytics analytics = FirebaseAnalytics.instance;
+  } catch (e) {
+    debugPrint('Firebase init: $e');
+  }
+
   await _loadLearnedLocations();
   runApp(const ProviderScope(child: KyivAlertApp()));
 }
@@ -990,8 +1004,8 @@ List<String> _dynamicExtraChannels = [];
 List<String> _dynamicDangerKeywords = [];
 List<String> _dynamicClearKeywords = [];
 
-const int kCurrentVersionCode = 13;
-const String kCurrentVersionName = '1.2.10';
+const int kCurrentVersionCode = 14;
+const String kCurrentVersionName = '1.2.11';
 
 class RemoteConfig {
   final int versionCode;
