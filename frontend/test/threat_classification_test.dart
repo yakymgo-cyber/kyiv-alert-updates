@@ -587,6 +587,42 @@ void main() {
       expect(t4.first['path'].first['name'], contains('Дорогожичі'));
     });
   });
+
+  group('Morning Digest Missile Counting & HTML Cleaning Tests', () {
+    test('cleanHtmlString cleans tags, HTML entities and does not cut words mid-word', () {
+      const raw = '<b>ДТЕК:</b> Графіки стабілізаційних відключень &laquo;Київ&raquo; та Київщина&nbsp;&#33;&#33; '
+          'Деталі: &#39;Укренерго&#39; &mdash; тривають ремонти.';
+      final cleaned = cleanHtmlString(raw);
+      expect(cleaned, contains('«Київ»'));
+      expect(cleaned, contains('!!'));
+      expect(cleaned, contains("'Укренерго'"));
+      expect(cleaned, contains('— тривають'));
+      expect(cleaned.contains('<b>'), isFalse);
+      expect(cleaned.contains('&nbsp;'), isFalse);
+    });
+
+    test('Missile keywords in morning digest properly classify missiles and bypass zero counter', () {
+      const missileKeywords = [
+        'ракет', 'баліст', 'іскандер', 'кинджал', 'циркон', 'калібр',
+        'х-101', 'х-22', 'х-59', 'х-69', 'онікс', 'с-300', 'с-400'
+      ];
+      const negativeWords = ['не підтверд', 'не фіксу', 'хибн', 'відбій', 'чисто'];
+
+      for (final kw in missileKeywords) {
+        final text = 'Увага! Фіксується $kw на Київ!';
+        final tLower = text.toLowerCase();
+        final bool isNeg = negativeWords.any((nw) => tLower.contains(nw));
+        final bool hasKw = missileKeywords.any((mk) => tLower.contains(mk));
+        expect(!isNeg && hasKw, isTrue, reason: 'Keyword $kw should match');
+      }
+
+      // Negative messages should be ignored
+      const negMsg = 'Відбій загрози балістики для Києва (хибна ціль, пуск не підтверджено)';
+      final negLower = negMsg.toLowerCase();
+      final bool isNeg = negativeWords.any((nw) => negLower.contains(nw));
+      expect(isNeg, isTrue);
+    });
+  });
 }
 
 

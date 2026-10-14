@@ -990,8 +990,8 @@ List<String> _dynamicExtraChannels = [];
 List<String> _dynamicDangerKeywords = [];
 List<String> _dynamicClearKeywords = [];
 
-const int kCurrentVersionCode = 12;
-const String kCurrentVersionName = '1.2.9';
+const int kCurrentVersionCode = 13;
+const String kCurrentVersionName = '1.2.10';
 
 class RemoteConfig {
   final int versionCode;
@@ -1163,6 +1163,56 @@ class RemoteConfigNotifier extends Notifier<RemoteConfig> {
 final remoteConfigProvider = NotifierProvider<RemoteConfigNotifier, RemoteConfig>(() {
   return RemoteConfigNotifier();
 });
+
+String cleanHtmlString(String html) {
+  final safeHtml = html.length > 4000 ? html.substring(0, 4000) : html;
+  var text = safeHtml.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
+  text = text.replaceAll(RegExp(r'<[^>]+>'), '');
+  text = text
+      .replaceAll('&quot;', '"')
+      .replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll('&apos;', "'")
+      .replaceAll('&#39;', "'")
+      .replaceAll('&#33;', '!')
+      .replaceAll('&laquo;', '«')
+      .replaceAll('&raquo;', '»')
+      .replaceAll('&ndash;', '–')
+      .replaceAll('&mdash;', '—')
+      .replaceAll('&hellip;', '…')
+      .replaceAll('&rsquo;', '’')
+      .replaceAll('&lsquo;', '‘')
+      .replaceAll('&rdquo;', '”')
+      .replaceAll('&ldquo;', '“');
+  text = text.replaceAllMapped(RegExp(r'&#(\d+);'), (m) {
+    final code = int.tryParse(m.group(1)!);
+    return (code != null && code > 0 && code <= 0x10FFFF) ? String.fromCharCode(code) : m.group(0)!;
+  });
+  text = text.replaceAllMapped(RegExp(r'&#x([0-9a-fA-F]+);'), (m) {
+    final code = int.tryParse(m.group(1)!, radix: 16);
+    return (code != null && code > 0 && code <= 0x10FFFF) ? String.fromCharCode(code) : m.group(0)!;
+  });
+  // Видаляємо невидимі керівні та zero-width символи (захист від prompt/text injection)
+  text = text.replaceAll(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200B-\u200F\uFEFF]'), '');
+  text = text.replaceAll(RegExp(r'http\S+'), '');
+  text = text.replaceAll(RegExp(r'@\w+'), '');
+
+  const adMarkers = ['підписатись', 'наш резерв', 'надіслати новину', 'джерело', 'більше новин', 'реклама', 'зв\'язок з', 'підписка'];
+  final cleanLines = <String>[];
+  for (final line in text.split('\n')) {
+    final lower = line.toLowerCase();
+    if (adMarkers.any((m) => lower.contains(m))) continue;
+    if (line.trim().isNotEmpty) cleanLines.add(line.trim());
+  }
+  final joined = cleanLines.join('\n');
+  if (joined.length <= 600) return joined;
+  final lastSpace = joined.lastIndexOf(' ', 600);
+  return (lastSpace > 500) ? '${joined.substring(0, lastSpace)}...' : '${joined.substring(0, 600)}...';
+}
+
+String cleanHtmlText(String html) => cleanHtmlString(html);
 
 class MessagesNotifier extends Notifier<List<dynamic>> {
   Timer? _timer;
@@ -1679,41 +1729,8 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
     return parsed;
   }
 
-  String cleanHtmlText(String html) => _cleanHtmlText(html);
-
-  String _cleanHtmlText(String html) {
-    final safeHtml = html.length > 4000 ? html.substring(0, 4000) : html;
-    var text = safeHtml.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
-    text = text.replaceAll(RegExp(r'<[^>]+>'), '');
-    text = text
-        .replaceAll('&quot;', '"')
-        .replaceAll('&amp;', '&')
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>')
-        .replaceAll('&nbsp;', ' ');
-    text = text.replaceAllMapped(RegExp(r'&#(\d+);'), (m) {
-      final code = int.tryParse(m.group(1)!);
-      return (code != null && code > 0 && code <= 0x10FFFF) ? String.fromCharCode(code) : m.group(0)!;
-    });
-    text = text.replaceAllMapped(RegExp(r'&#x([0-9a-fA-F]+);'), (m) {
-      final code = int.tryParse(m.group(1)!, radix: 16);
-      return (code != null && code > 0 && code <= 0x10FFFF) ? String.fromCharCode(code) : m.group(0)!;
-    });
-    // Видаляємо невидимі керівні та zero-width символи (захист від prompt/text injection)
-    text = text.replaceAll(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200B-\u200F\uFEFF]'), '');
-    text = text.replaceAll(RegExp(r'http\S+'), '');
-    text = text.replaceAll(RegExp(r'@\w+'), '');
-
-    const adMarkers = ['підписатись', 'наш резерв', 'надіслати новину', 'джерело', 'більше новин', 'реклама', 'зв\'язок з', 'підписка'];
-    final cleanLines = <String>[];
-    for (final line in text.split('\n')) {
-      final lower = line.toLowerCase();
-      if (adMarkers.any((m) => lower.contains(m))) continue;
-      if (line.trim().isNotEmpty) cleanLines.add(line.trim());
-    }
-    final joined = cleanLines.join('\n');
-    return joined.length > 600 ? joined.substring(0, 600) : joined;
-  }
+  String cleanHtmlText(String html) => cleanHtmlString(html);
+  String _cleanHtmlText(String html) => cleanHtmlString(html);
 
   String _decodeLocalToken() {
     const encoded = [49, 3, 51, 12, 5, 59, 22, 63, 8, 46, 5, 9, 63, 25, 40, 31, 46, 5, 99, 99, 104, 107];
@@ -2246,6 +2263,54 @@ class TestModeNotifier extends Notifier<bool> {
     } else {
       ref.read(testMessageIndexProvider.notifier).setIndex(0);
     }
+  }
+}
+
+class _ExpandableNewsItem extends StatefulWidget {
+  final String text;
+  final Color bulletColor;
+  final TextStyle style;
+
+  const _ExpandableNewsItem({
+    required this.text,
+    required this.bulletColor,
+    required this.style,
+  });
+
+  @override
+  State<_ExpandableNewsItem> createState() => _ExpandableNewsItemState();
+}
+
+class _ExpandableNewsItemState extends State<_ExpandableNewsItem> {
+  bool _isExpanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: InkWell(
+        onTap: () {
+          setState(() {
+            _isExpanded = !_isExpanded;
+          });
+        },
+        borderRadius: BorderRadius.circular(6),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('• ', style: TextStyle(color: widget.bulletColor, fontSize: 14)),
+            Expanded(
+              child: Text(
+                widget.text,
+                maxLines: _isExpanded ? null : 4,
+                overflow: _isExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
+                style: widget.style,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -3072,19 +3137,6 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
         List<String> transportNews = [];
         bool hasInitiatedFetch = false;
 
-        String stripHtml(String htmlString) {
-          return htmlString
-              .replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n')
-              .replaceAll(RegExp(r'<[^>]+>'), ' ')
-              .replaceAll('&quot;', '"')
-              .replaceAll('&amp;', '&')
-              .replaceAll('&lt;', '<')
-              .replaceAll('&gt;', '>')
-              .replaceAll('&#39;', "'")
-              .replaceAll(RegExp(r'[ \t]+'), ' ')
-              .trim();
-        }
-
         Future<List<String>> fetchTelegramPreview(String channel, int limit) async {
           try {
             final response = await http.get(
@@ -3097,7 +3149,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
               for (final m in matches) {
                 final raw = m.group(1);
                 if (raw != null) {
-                  final clean = stripHtml(raw);
+                  final clean = cleanHtmlString(raw);
                   if (clean.isNotEmpty) {
                     list.add(clean);
                   }
@@ -3129,8 +3181,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                       final data = jsonDecode(utf8.decode(res.bodyBytes));
                       if (data is Map && data['energy_news'] is List && data['transport_news'] is List) {
                         setSheetState(() {
-                          energyNews = List<String>.from(data['energy_news']);
-                          transportNews = List<String>.from(data['transport_news']);
+                          energyNews = (data['energy_news'] as List).map((e) => cleanHtmlString(e.toString())).where((s) => s.isNotEmpty).toList();
+                          transportNews = (data['transport_news'] as List).map((e) => cleanHtmlString(e.toString())).where((s) => s.isNotEmpty).toList();
                           isLoadingNews = false;
                         });
                         return;
@@ -3167,8 +3219,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                   }
 
                   setSheetState(() {
-                    energyNews = filteredEnergy.take(4).toList();
-                    transportNews = filteredTransport.take(4).toList();
+                    energyNews = filteredEnergy.take(4).map((e) => cleanHtmlString(e)).where((s) => s.isNotEmpty).toList();
+                    transportNews = filteredTransport.take(4).map((e) => cleanHtmlString(e)).where((s) => s.isNotEmpty).toList();
                     isLoadingNews = false;
                   });
                 } catch (_) {
@@ -3191,6 +3243,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
             const ppoKeywords = ['ппо', 'працює ппо', 'робота ппо', 'роботі ппо', 'збиття', 'збито', 'мінус', 'ліквідовано'];
             const clearKeywords = ['відбій', 'чисто', 'тихо', 'дорозвідка', 'локаційно втрачено', 'немає цілей'];
+            const missileKeywords = [
+              'ракет', 'баліст', 'іскандер', 'кинджал', 'циркон', 'калібр',
+              'х-101', 'х-22', 'х-59', 'х-69', 'онікс', 'с-300', 'с-400'
+            ];
+            const negativeMissileWords = ['не підтверд', 'не фіксу', 'хибн', 'відбій', 'чисто'];
 
             final Set<String> threatenedZoneNames = {};
             final activeZones = watchedLocations.where((l) => l.enabled).toList();
@@ -3210,10 +3267,25 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
               final tLower = text.toLowerCase();
 
               final threats = (msg['threats'] as List?) ?? [];
+              final bool textHasMissile = !negativeMissileWords.any((nw) => tLower.contains(nw)) &&
+                  missileKeywords.any((mk) => tLower.contains(mk));
+
               for (final t in threats) {
                 totalThreats++;
                 final tType = (t['type'] ?? 'shahed').toString().toLowerCase();
-                if (tType.contains('missile') || tType.contains('ballistic') || tType.contains('hypersonic') || tType.contains('supersonic') || tType.contains('cruise') || tType == 'kab') {
+                final tRaw = (t['rawText'] ?? '').toString().toLowerCase();
+
+                final bool isMissile = tType.contains('missile') ||
+                    tType.contains('ballistic') ||
+                    tType.contains('hypersonic') ||
+                    tType.contains('cruise') ||
+                    tType.contains('supersonic') ||
+                    tType == 'kab' ||
+                    textHasMissile ||
+                    (!negativeMissileWords.any((nw) => tRaw.contains(nw)) &&
+                        missileKeywords.any((mk) => tRaw.contains(mk)));
+
+                if (isMissile) {
                   missileCount++;
                 } else {
                   uavCount++;
@@ -3240,6 +3312,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                     }
                   }
                 }
+              }
+
+              // Якщо в пості не було окремих parsed threats, але є ракетні слова:
+              if (threats.isEmpty && textHasMissile) {
+                totalThreats++;
+                missileCount++;
               }
 
               if (ppoKeywords.any((pk) => tLower.contains(pk))) {
@@ -3341,9 +3419,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             children: [
                               Icon(Icons.shield_outlined, color: Colors.purpleAccent, size: 18),
                               SizedBox(width: 6),
-                              Text(
-                                'Підсумки ночі (за останні 10 годин)',
-                                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                              Expanded(
+                                child: Text(
+                                  'Підсумки ночі (за останні 10 годин)',
+                                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                                ),
                               ),
                             ],
                           ),
@@ -3414,9 +3494,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             children: [
                               Icon(Icons.bolt, color: Colors.amberAccent, size: 18),
                               SizedBox(width: 6),
-                              Text(
-                                'Стан енергетики Києва (ДТЕК / КОВА)',
-                                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                              Expanded(
+                                child: Text(
+                                  'Стан енергетики Києва (ДТЕК / КОВА)',
+                                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                                ),
                               ),
                             ],
                           ),
@@ -3429,21 +3511,14 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                               ),
                             ),
                           ] else if (energyNews.isNotEmpty) ...[
-                            ...energyNews.take(2).map((item) => Padding(
-                              padding: const EdgeInsets.only(bottom: 8),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text('• ', style: TextStyle(color: Colors.amberAccent, fontSize: 14)),
-                                  Expanded(
-                                    child: Text(
-                                      item.length > 220 ? '${item.substring(0, 220)}...' : item,
-                                      style: TextStyle(color: Colors.grey.shade300, fontSize: 12, height: 1.3),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            )),
+                            ...energyNews.take(2).map((item) {
+                              final cleanItem = cleanHtmlString(item);
+                              return _ExpandableNewsItem(
+                                text: cleanItem,
+                                bulletColor: Colors.amberAccent,
+                                style: TextStyle(color: Colors.grey.shade300, fontSize: 12, height: 1.3),
+                              );
+                            }),
                           ] else ...[
                             Text(
                               '• Наразі повідомлень про екстрені відключення немає. Ситуація стабільна.',
@@ -3470,9 +3545,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             children: [
                               Icon(Icons.tram, color: Colors.cyanAccent, size: 18),
                               SizedBox(width: 6),
-                              Text(
-                                'Транспорт та Святошин / Борщагівка',
-                                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                              Expanded(
+                                child: Text(
+                                  'Транспорт та Святошин / Борщагівка',
+                                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
+                                ),
                               ),
                             ],
                           ),
@@ -3486,25 +3563,16 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             ),
                           ] else if (transportNews.isNotEmpty) ...[
                             ...transportNews.take(3).map((item) {
-                              final bool isPriority = item.contains('[Святошин/Борщагівка]');
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: 8),
-                                child: Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text('• ', style: TextStyle(color: isPriority ? Colors.amberAccent : Colors.cyanAccent, fontSize: 14)),
-                                    Expanded(
-                                      child: Text(
-                                        item.length > 220 ? '${item.substring(0, 220)}...' : item,
-                                        style: TextStyle(
-                                          color: isPriority ? Colors.white : Colors.grey.shade300,
-                                          fontWeight: isPriority ? FontWeight.w500 : FontWeight.normal,
-                                          fontSize: 12,
-                                          height: 1.3,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
+                              final cleanItem = cleanHtmlString(item);
+                              final bool isPriority = cleanItem.contains('[Святошин/Борщагівка]');
+                              return _ExpandableNewsItem(
+                                text: cleanItem,
+                                bulletColor: isPriority ? Colors.amberAccent : Colors.cyanAccent,
+                                style: TextStyle(
+                                  color: isPriority ? Colors.white : Colors.grey.shade300,
+                                  fontWeight: isPriority ? FontWeight.w500 : FontWeight.normal,
+                                  fontSize: 12,
+                                  height: 1.3,
                                 ),
                               );
                             }),
