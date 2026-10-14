@@ -1,0 +1,31 @@
+# Build & dependencies
+build/
+**/build/
+.dart_tool/
+**/.dart_tool/
+.pub-cache/
+.pub/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.session
+*.session-journal
+backend/bot_session.session*
+.env
+
+# IDE & OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+*.log
+
+# Context dumps & large APK binaries
+context.txt
+code_only_context.txt
+*.apk
+

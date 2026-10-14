@@ -1,0 +1,55 @@
+name: Auto Update Locations Dictionary
+
+on:
+  schedule:
+    # Запуск щодня о 06:00 UTC (09:00 за київським часом)
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-dictionary:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install httpx
+
+      - name: 🗺️ Run location analyzer & Nominatim geocoder
+        run: |
+          python frontend/scratch/analyze_channels.py
+
+      - name: 🔄 Sync root remote_config.json
+        run: |
+          if [ -f backend/remote_config.json ]; then
+            cp backend/remote_config.json remote_config.json
+          fi
+
+      - name: 🚀 Commit and push updated dictionary
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add backend/remote_config.json remote_config.json
+          
+          if git diff --staged --quiet; then
+            echo "ℹ️ Нових населених пунктів не знайдено. Словник актуальний."
+          else
+            git commit -m "Auto-update locations dictionary [skip ci]"
+            git push origin HEAD
+            echo "✅ Нові локації успішно збережено та опубліковано у репозиторій!"
+          fi

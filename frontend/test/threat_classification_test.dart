@@ -1,0 +1,500 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:frontend/main.dart';
+
+void main() {
+  group('Threat Classification Tests', () {
+    final notifier = MessagesNotifier();
+
+    test('Classifies missile_hypersonic correctly', () {
+      final threats = notifier.parseLocalThreats('Кинджал курсом на Київ!');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['type'], equals('missile_hypersonic'));
+      expect(threats.first['speed'], equals(12000.0));
+    });
+
+    test('Classifies missile_ballistic correctly', () {
+      final threats = notifier.parseLocalThreats('Балістика з півночі на Бровари');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['type'], equals('missile_ballistic'));
+      expect(threats.first['speed'], equals(5000.0));
+    });
+
+    test('Classifies missile_supersonic correctly', () {
+      final threats = notifier.parseLocalThreats('Пуск надзвукової ракети Х-22 в бік Борисполя');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['type'], equals('missile_supersonic'));
+      expect(threats.first['speed'], equals(3200.0));
+    });
+
+    test('Classifies missile_cruise correctly', () {
+      final threats = notifier.parseLocalThreats('Крилата ракета Х-101 через Білу Церкву на Васильків');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['type'], equals('missile_cruise'));
+      expect(threats.first['speed'], equals(900.0));
+    });
+
+    test('Classifies kab correctly', () {
+      final threats = notifier.parseLocalThreats('Пуск КАБ в напрямку Вишгорода');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['type'], equals('kab'));
+      expect(threats.first['speed'], equals(850.0));
+    });
+
+    test('Classifies uav_guided correctly', () {
+      final threats = notifier.parseLocalThreats('БпЛА на керуванні 🎮 над Обуховом');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['type'], equals('uav_guided'));
+      expect(threats.first['speed'], equals(220.0));
+    });
+
+    test('Classifies uav_recon correctly and sets isCircling', () {
+      final threats = notifier.parseLocalThreats('Розвідник Zala над Хотянівкою');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['type'], equals('uav_recon'));
+      expect(threats.first['speed'], equals(130.0));
+      expect(threats.first['isCircling'], isTrue);
+    });
+
+    test('Classifies uav_decoy correctly', () {
+      final threats = notifier.parseLocalThreats('Імітатор фальш-ціль Гербера над Макаровом');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['type'], equals('uav_decoy'));
+      expect(threats.first['speed'], equals(160.0));
+    });
+
+    test('Defaults to shahed (185 km/h) for regular drone without jet keywords', () {
+      final threats = notifier.parseLocalThreats('Шахед повз Фастів на Київ');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['type'], equals('shahed'));
+      expect(threats.first['speed'], equals(185.0));
+    });
+
+    test('Classifies shahed_jet only if explicit markers present', () {
+      final threats = notifier.parseLocalThreats('Реактивний шахед Герань-3 курсом на Ірпінь');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['type'], equals('shahed_jet'));
+      expect(threats.first['speed'], equals(500.0));
+    });
+  });
+
+  group('Altitude Dynamics and Descending Tests', () {
+    final notifier = MessagesNotifier();
+
+    test('Extracts altitude in meters and identifies descending markers', () {
+      final threats = notifier.parseLocalThreats('БпЛА падає, висота 800 м над Бояркою');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['altitudeMeters'], equals(800));
+      expect(threats.first['isDescending'], isTrue);
+    });
+
+    test('Automatically marks low altitude <= 1500m as descending', () {
+      final threats = notifier.parseLocalThreats('Шахед на висоті 1200м повз Бучу');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['altitudeMeters'], equals(1200));
+      expect(threats.first['isDescending'], isTrue);
+    });
+
+    test('Normal flight at high altitude is not descending', () {
+      final threats = notifier.parseLocalThreats('БпЛА на висоті 2500 м через Переяслав');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['altitudeMeters'], equals(2500));
+      expect(threats.first['isDescending'], isFalse);
+    });
+  });
+
+  group('Compass Modifier and Directional Reordering Tests', () {
+    final notifier = MessagesNotifier();
+
+    test('Reorders "На Житомирщину, північніше Іванкова" with compass location first', () {
+      final threats = notifier.parseLocalThreats('На Житомирщину, північніше Іванкова');
+      expect(threats.isNotEmpty, isTrue);
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(2));
+      expect(path[0]['name'], contains('Північніше Іванків'));
+      expect(path[1]['name'], contains('Житомирщина'));
+    });
+
+    test('Preserves forward direction "Шахед північніше Іванкова курсом на Житомирщину"', () {
+      final threats = notifier.parseLocalThreats('Шахед північніше Іванкова курсом на Житомирщину');
+      expect(threats.isNotEmpty, isTrue);
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(2));
+      expect(path[0]['name'], contains('Північніше Іванків'));
+      expect(path[1]['name'], contains('Житомирщина'));
+    });
+
+    test('Parses regional exit vector "Вектор на Черкащину"', () {
+      final threats = notifier.parseLocalThreats('Шахед через Обухів, вектор на Черкащину');
+      expect(threats.isNotEmpty, isTrue);
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(2));
+      expect(path[0]['name'], contains('Обухів'));
+      expect(path[1]['name'], contains('Черкащина'));
+    });
+
+    test('Reorders "Крилаті ракети через Чернігівщину курсом на Київ! Вже біля Славутича!" with Slavutych start and Kyiv destination', () {
+      final threats = notifier.parseLocalThreats('Крилаті ракети через Чернігівщину курсом на Київ! Вже біля Славутича!');
+      expect(threats.isNotEmpty, isTrue);
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(3));
+      expect(path[1]['name'], contains('Славутич'));
+      expect(path.last['name'], contains('Київ'));
+    });
+  });
+
+  group('Sector Midpoint and New Locations Tests', () {
+    final notifier = MessagesNotifier();
+
+    test('Merges slash-separated locations into single Sector Midpoint', () {
+      final threats = notifier.parseLocalThreats('Шахед на Лютіж/Петрівці');
+      expect(threats.isNotEmpty, isTrue);
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(1));
+      expect(path.first['name'], equals('Лютіж / Нові Петрівці'));
+      // Coordinates should be average of Liutizh (50.684, 30.395) and Novi Petrivtsi (50.629, 30.435)
+      expect(path.first['lat'], closeTo((50.684 + 50.629) / 2.0, 0.001));
+      expect(path.first['lon'], closeTo((30.395 + 30.435) / 2.0, 0.001));
+    });
+
+    test('Merges slash with spaces "Димер / Демидів"', () {
+      final threats = notifier.parseLocalThreats('БпЛА курсом через Димер / Демидів на Київ');
+      expect(threats.isNotEmpty, isTrue);
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(2));
+      expect(path.first['name'], equals('Димер / Демидів'));
+      expect(path.last['name'], contains('Київ'));
+    });
+
+    test('Recognizes newly added locations from regional dump', () {
+      final threats = notifier.parseLocalThreats('Шахед повз Стещино на Рославичі');
+      expect(threats.isNotEmpty, isTrue);
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(2));
+      expect(path[0]['name'], contains('Стещино'));
+      expect(path[1]['name'], contains('Рославичі'));
+    });
+
+    test('Recognizes Bucha/Makariv direction locations', () {
+      final threats = notifier.parseLocalThreats('Ціль повз Бабинці на Плахтянку');
+      expect(threats.isNotEmpty, isTrue);
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(2));
+      expect(path[0]['name'], contains('Бабинці'));
+      expect(path[1]['name'], contains('Плахтянка'));
+    });
+
+    test('Extracts altitude standalone number correctly', () {
+      expect(notifier.extractAltitude('2300'), equals(2300));
+      expect(notifier.extractAltitude('Висота 1700 м'), equals(1700));
+      expect(notifier.extractAltitude('Повідомлення без цифр'), isNull);
+    });
+  });
+
+  group('Missile Corridor and Emergency Ballistic Markers Tests', () {
+    final notifier = MessagesNotifier();
+
+    test('Classifies standalone "ЦІЛЬ" or "!!!!" without drone keywords as missile_ballistic', () {
+      final threats1 = notifier.parseLocalThreats('ЦІЛЬ на Бровари');
+      expect(threats1.isNotEmpty, isTrue);
+      expect(threats1.first['type'], equals('missile_ballistic'));
+      expect(threats1.first['speed'], equals(5000.0));
+      expect(threats1.first['label'], equals('Балістична / Швидкісна ціль'));
+
+      final threats2 = notifier.parseLocalThreats('Київ увага !!!!!! на Бровари');
+      expect(threats2.isNotEmpty, isTrue);
+      expect(threats2.first['type'], equals('missile_ballistic'));
+      expect(threats2.first['speed'], equals(5000.0));
+    });
+
+    test('Classifies "швидкісна ціль" and "виходи" as missile_ballistic', () {
+      final threats = notifier.parseLocalThreats('Швидкісна ціль через Бобровицю на Згурівку');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['type'], equals('missile_ballistic'));
+      expect(threats.first['speed'], equals(5000.0));
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(2));
+      expect(path[0]['name'], contains('Бобровиця'));
+      expect(path[1]['name'], contains('Згурівка'));
+    });
+
+    test('Preserves shahed_jet for explicit drone with speed markers', () {
+      final threats = notifier.parseLocalThreats('Швидкісний дрон / реактивний шахед на Бобровицю');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['type'], equals('shahed_jet'));
+      expect(threats.first['speed'], equals(500.0));
+    });
+
+    test('Recognizes Chernihiv/Pryluky missile corridor locations', () {
+      final threats = notifier.parseLocalThreats('Ціль: Ніжин -> Носівка -> Бобровиця -> Київ');
+      expect(threats.isNotEmpty, isTrue);
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(4));
+      expect(path[0]['name'], contains('Ніжин'));
+      expect(path[1]['name'], contains('Носівка'));
+      expect(path[2]['name'], contains('Бобровиця'));
+      expect(path[3]['name'], contains('Київ'));
+    });
+
+    test('cleanHtmlText decodes numeric decimal and hex entities like &#33;', () {
+      final text1 = notifier.cleanHtmlText('Київ увага &#33;&#33;&#33;');
+      expect(text1, equals('Київ увага !!!'));
+
+      final text2 = notifier.cleanHtmlText('Увага&#x21; &#39;Ціль&#39; &#8220;Київ&#8221;');
+      expect(text2, equals("Увага! 'Ціль' “Київ”"));
+    });
+
+    test('deduplicateMessages filters out messages older than 6 hours', () {
+      final now = DateTime.now().toUtc();
+      final recentMsg = {
+        'id': '101',
+        'channel': 'test_ch',
+        'text': 'Свіже повідомлення про БпЛА',
+        'date': now.subtract(const Duration(hours: 2)).toIso8601String(),
+      };
+      final oldMsg = {
+        'id': '102',
+        'channel': 'test_ch',
+        'text': 'Старе повідомлення віком 7 годин',
+        'date': now.subtract(const Duration(hours: 7)).toIso8601String(),
+      };
+      final yesterdayMsg = {
+        'id': '103',
+        'channel': 'test_ch',
+        'text': 'Вчорашнє повідомлення',
+        'date': now.subtract(const Duration(hours: 20)).toIso8601String(),
+      };
+
+      final result = notifier.deduplicateMessages([recentMsg, oldMsg, yesterdayMsg]);
+      expect(result.length, equals(1));
+      expect(result.first['id'], equals('101'));
+      expect(result.first['text'], contains('Свіже'));
+    });
+
+    test('categorizeLocalMessage recognizes multi-target and urgent alert danger phrases', () {
+      expect(notifier.categorizeLocalMessage('Багато цілей йде'), equals('danger'));
+      expect(notifier.categorizeLocalMessage('Цілі йдуть на Київ'), equals('danger'));
+      expect(notifier.categorizeLocalMessage('Група цілей через Бориспіль'), equals('danger'));
+      expect(notifier.categorizeLocalMessage('Боярка, Васік !!'), equals('danger'));
+      expect(notifier.categorizeLocalMessage('Київ увага !!'), equals('danger'));
+      expect(notifier.categorizeLocalMessage('УВАГА !!'), equals('danger'));
+    });
+
+    test('parseLocalThreats classifies short urgent alerts and "багато цілей" as missile_ballistic', () {
+      final threats1 = notifier.parseLocalThreats('Боярка, Васік !!');
+      expect(threats1.isNotEmpty, isTrue);
+      expect(threats1.first['type'], equals('missile_ballistic'));
+      expect(threats1.first['speed'], equals(5000.0));
+
+      final threats2 = notifier.parseLocalThreats('Багато цілей йде на Київ');
+      expect(threats2.isNotEmpty, isTrue);
+      expect(threats2.first['type'], equals('missile_ballistic'));
+      expect(threats2.first['speed'], equals(5000.0));
+
+      final threats3 = notifier.parseLocalThreats('УВАГА! Васильків');
+      expect(threats3.isNotEmpty, isTrue);
+      expect(threats3.first['type'], equals('missile_ballistic'));
+      expect(threats3.first['speed'], equals(5000.0));
+
+      // Explicit drone remains shahed
+      final droneThreats = notifier.parseLocalThreats('Шахед на Васильків');
+      expect(droneThreats.isNotEmpty, isTrue);
+      expect(droneThreats.first['type'], equals('shahed'));
+      expect(droneThreats.first['speed'], equals(185.0));
+    });
+  });
+
+  group('Nationwide Summaries & External Border Filtering Tests', () {
+    final notifier = MessagesNotifier();
+
+    test('Filters out lines mentioning only external border regions without Kyiv connection', () {
+      final threats = notifier.parseLocalThreats('1х Коростень але йде далі');
+      expect(threats.isEmpty, isTrue);
+    });
+
+    test('Filters out lines mentioning far regions without Kyiv anchors', () {
+      final threats1 = notifier.parseLocalThreats('3х на Кременчук р. далі Черкащина');
+      expect(threats1.isEmpty, isTrue);
+
+      final threats2 = notifier.parseLocalThreats('2х через Одещину на Вінниччину');
+      expect(threats2.isEmpty, isTrue);
+
+      final threats3 = notifier.parseLocalThreats('4 нових реактива в Полтавську');
+      expect(threats3.isEmpty, isTrue);
+    });
+
+    test('Preserves cross-border trajectory entering or exiting Kyiv Oblast', () {
+      final threats = notifier.parseLocalThreats('Іванків -> Житомирщина');
+      expect(threats.isNotEmpty, isTrue);
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(2));
+      expect(path[0]['name'], contains('Іванків'));
+      expect(path[1]['name'], contains('Житомирщина'));
+    });
+
+    test('Preserves trajectory from border town into Kyiv Oblast', () {
+      final threats = notifier.parseLocalThreats('Прилуки -> Згурівка');
+      expect(threats.isNotEmpty, isTrue);
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(2));
+      expect(path[0]['name'], contains('Прилуки'));
+      expect(path[1]['name'], contains('Згурівка'));
+    });
+
+    test('Merges district names with "р." and slash separator into midpoint', () {
+      final threats = notifier.parseLocalThreats('Шахед Бориспліь р. / Обухів р.');
+      expect(threats.isNotEmpty, isTrue);
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(1));
+      expect(path.first['name'], contains('Бориспіль'));
+      expect(path.first['name'], contains('Обухів'));
+    });
+  });
+
+  group('Oleksandrivka Location & False Ballistic Prevention Tests', () {
+    final notifier = MessagesNotifier();
+
+    test('Maps "Олександрівки" to Boryspil sector (50.392, 30.892)', () {
+      final threats = notifier.parseLocalThreats('БпЛА через Олександрівки на Требухів');
+      expect(threats.isNotEmpty, isTrue);
+      final path = threats.first['path'] as List<dynamic>;
+      expect(path.length, equals(2));
+      expect(path[0]['name'], contains('Олександрівка'));
+      expect(path[0]['lat'], closeTo(50.392, 0.005));
+      expect(path[0]['lon'], closeTo(30.892, 0.005));
+      expect(path[1]['name'], contains('Требухів'));
+      expect(threats.first['type'], equals('shahed'));
+      expect(threats.first['speed'], equals(185.0));
+    });
+
+    test('Short "Знищено" / "Ліквідовано" / "Мінус" categorized as clear, not news', () {
+      expect(notifier.categorizeLocalMessage('Знищено'), equals('clear'));
+      expect(notifier.categorizeLocalMessage('Ліквідовано'), equals('clear'));
+      expect(notifier.categorizeLocalMessage('Мінус'), equals('clear'));
+      expect(notifier.categorizeLocalMessage('Збито'), equals('clear'));
+      expect(notifier.categorizeLocalMessage('Відбито'), equals('clear'));
+
+      // Long message with casualties / aftermath remains news
+      expect(notifier.categorizeLocalMessage('За ніч знищено 25 шахедів, постраждало 2 людей, працює ДСНС'), equals('news'));
+    });
+
+    test('Categorizes "без фіксацій", "чисте небо", "попередньо чисто" as clear', () {
+      expect(notifier.categorizeLocalMessage('Область без фіксацій'), equals('clear'));
+      expect(notifier.categorizeLocalMessage('Київ чисте небо'), equals('clear'));
+      expect(notifier.categorizeLocalMessage('Попередньо чисто'), equals('clear'));
+      expect(notifier.categorizeLocalMessage('Фіксацій немає'), equals('clear'));
+      expect(notifier.categorizeLocalMessage('Не фіксуються'), equals('clear'));
+    });
+
+    test('Filters out transit messages mentioning other regions without Kyiv connection', () {
+      final threats1 = notifier.parseLocalThreats('Там 8х реактів в Полтавську скоро з брянська залітати будуть пуски тривають');
+      expect(threats1.isEmpty, isTrue);
+
+      final threats2 = notifier.parseLocalThreats('2х на Луцьк через Рівненщину');
+      expect(threats2.isEmpty, isTrue);
+
+      final threats3 = notifier.parseLocalThreats('Група на Кременчук та у Вінницьку область');
+      expect(threats3.isEmpty, isTrue);
+    });
+  });
+
+  group('Smart TTL, Typos & Directional Reordering Tests', () {
+    final notifier = MessagesNotifier();
+
+    test('getThreatTtlSeconds returns correct values per threat category', () {
+      expect(getThreatTtlSeconds('missile_ballistic'), equals(120));
+      expect(getThreatTtlSeconds('missile_hypersonic'), equals(120));
+      expect(getThreatTtlSeconds('missile_cruise'), equals(180));
+      expect(getThreatTtlSeconds('missile_supersonic'), equals(180));
+      expect(getThreatTtlSeconds('kab'), equals(180));
+      expect(getThreatTtlSeconds('shahed'), equals(300));
+      expect(getThreatTtlSeconds('shahed_jet'), equals(300));
+      expect(getThreatTtlSeconds('uav_guided'), equals(300));
+      expect(getThreatTtlSeconds('uav_recon'), equals(300));
+      expect(getThreatTtlSeconds('uav_decoy'), equals(300));
+      // Exiting oblast override
+      expect(getThreatTtlSeconds('shahed', isExitingOblast: true), equals(45));
+      expect(getThreatTtlSeconds('missile_cruise', isExitingOblast: true), equals(45));
+    });
+
+    test('Recognizes channel typos in Kyiv locations dictionary', () {
+      final t1 = notifier.parseLocalThreats('Шахед біля береовец');
+      expect(t1.isNotEmpty, isTrue);
+      expect(t1.first['path'].first['name'], equals('Берковець'));
+
+      final t2 = notifier.parseLocalThreats('БпЛА через куркнівк');
+      expect(t2.isNotEmpty, isTrue);
+      expect(t2.first['path'].first['name'], equals('Куренівка'));
+
+      final t3 = notifier.parseLocalThreats('Ціль страхолвсс');
+      expect(t3.isNotEmpty, isTrue);
+      expect(t3.first['path'].first['name'], equals('Страхолісся'));
+
+      final t4 = notifier.parseLocalThreats('Шахед карариш');
+      expect(t4.isNotEmpty, isTrue);
+      expect(t4.first['path'].first['name'], equals('Карапиші'));
+
+      final t5 = notifier.parseLocalThreats('Шахед тромтинк на бархат');
+      expect(t5.isNotEmpty, isTrue);
+      final path5 = t5.first['path'] as List;
+      expect(path5.length, equals(2));
+      expect(path5[0]['name'], equals('Тростинка'));
+      expect(path5[1]['name'], equals('Барахти'));
+
+      final t6 = notifier.parseLocalThreats('БпЛА гаоздів у бік лівобережк');
+      expect(t6.isNotEmpty, isTrue);
+      final path6 = t6.first['path'] as List;
+      expect(path6.length, equals(2));
+      expect(path6[0]['name'], equals('Гвоздів'));
+      expect(path6[1]['name'], equals('Лівобережна'));
+    });
+
+    test('Directional reordering reorders вектор, курс, в бік (including вектор ~оболонь)', () {
+      final t1 = notifier.parseLocalThreats('Шахед біля Вишгорода, вектор ~оболонь');
+      expect(t1.isNotEmpty, isTrue);
+      final path1 = t1.first['path'] as List;
+      expect(path1.length, equals(2));
+      expect(path1[0]['name'], contains('Вишгород'));
+      expect(path1[1]['name'], contains('Оболонь'));
+
+      final t2 = notifier.parseLocalThreats('Шахед біля Василькова курс Фастів');
+      expect(t2.isNotEmpty, isTrue);
+      final path2 = t2.first['path'] as List;
+      expect(path2.length, equals(2));
+      expect(path2[0]['name'], contains('Васильків'));
+      expect(path2[1]['name'], contains('Фастів'));
+
+      final t3 = notifier.parseLocalThreats('Шахед біля Броварів в бік Борисполя');
+      expect(t3.isNotEmpty, isTrue);
+      final path3 = t3.first['path'] as List;
+      expect(path3.length, equals(2));
+      expect(path3[0]['name'], contains('Бровари'));
+      expect(path3[1]['name'], contains('Бориспіль'));
+    });
+  });
+
+  group('Auto-Discovery Geocoder & Stemming Tests', () {
+    test('stemLocationCandidate correctly stems Ukrainian location names', () {
+      expect(stemLocationCandidate('Глеваха'), equals('глевах'));
+      expect(stemLocationCandidate('Новосілки'), equals('новосілк'));
+      expect(stemLocationCandidate('Калинівка'), equals('калинівк'));
+      expect(stemLocationCandidate('Бровари'), equals('бровар'));
+      expect(stemLocationCandidate('Вишневе'), equals('вишнев'));
+      // Does not trim if length < 6
+      expect(stemLocationCandidate('Віта'), equals('віта'));
+      expect(stemLocationCandidate('Буча'), equals('буча'));
+      // Does not trim if does not end with vowel
+      expect(stemLocationCandidate('Коростень'), equals('коростень'));
+      expect(stemLocationCandidate('Фастів'), equals('фастів'));
+    });
+
+    test('parseLocalThreats safely ignores stop words and handles location candidates', () {
+      final notifier = MessagesNotifier();
+      final threats = notifier.parseLocalThreats('Увага на Київщину! Шахед курсом на Васильків');
+      expect(threats.isNotEmpty, isTrue);
+      expect(threats.first['path'].first['name'], contains('Васильків'));
+    });
+  });
+}
+
+
+
