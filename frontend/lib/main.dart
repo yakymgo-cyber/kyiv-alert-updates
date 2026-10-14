@@ -238,6 +238,7 @@ class WatchedLocationsNotifier extends Notifier<List<WatchedLocation>> {
     try {
       final file = await _getAppStorageFile('watched_locations.json');
       if (file != null && await file.exists()) {
+        if (await file.length() > 524288) return;
         final content = await file.readAsString();
         final list = json.decode(content) as List;
         if (list.isNotEmpty) {
@@ -929,17 +930,27 @@ Future<void> _loadLearnedLocations() async {
   try {
     final file = await _getAppStorageFile('learned_locations.json');
     if (file != null && await file.exists()) {
+      if (await file.length() > 524288) return;
       final content = await file.readAsString();
       final Map<String, dynamic> data = json.decode(content);
+      int count = 0;
       for (final entry in data.entries) {
+        if (count >= 300) break;
+        final keyStr = entry.key.trim().toLowerCase();
+        if (keyStr.length < 3 || keyStr.length > 35) continue;
         final val = entry.value;
         if (val is Map) {
           final lat = (val['lat'] as num?)?.toDouble();
           final lon = (val['lon'] as num?)?.toDouble();
-          final name = (val['name'] ?? entry.key).toString();
+          final rawName = (val['name'] ?? keyStr).toString();
+          final cleanName = rawName.replaceAll(RegExp(r'<[^>]*>'), '').replaceAll(RegExp(r'[\r\n\t]'), ' ').trim();
+          final safeName = cleanName.length > 40 ? cleanName.substring(0, 40) : cleanName;
           if (lat != null && lon != null) {
-            _learnedLocations[entry.key] = (lat, lon, name);
-            _kKyivLocations[entry.key] = (lat, lon, name);
+            if (lat >= 49.1 && lat <= 51.6 && lon >= 29.2 && lon <= 32.2) {
+              _learnedLocations[keyStr] = (lat, lon, safeName);
+              _kKyivLocations[keyStr] = (lat, lon, safeName);
+              count++;
+            }
           }
         }
       }
@@ -966,6 +977,7 @@ Future<void> _saveLearnedLocations() async {
 
 Future<void> _autoGeocodeLocation(String rawWord, String stem) async {
   try {
+    if (stem.length < 3 || stem.length > 35 || _learnedLocations.length >= 300) return;
     final uri = Uri.parse(
       'https://nominatim.openstreetmap.org/search?format=json&q=${Uri.encodeComponent("$rawWord, Київська область")}&viewbox=29.2,51.6,32.2,49.1&bounded=1&limit=1&accept-language=uk'
     );
@@ -980,10 +992,12 @@ Future<void> _autoGeocodeLocation(String rawWord, String stem) async {
         final lat = double.tryParse(item['lat']?.toString() ?? '');
         final lon = double.tryParse(item['lon']?.toString() ?? '');
         if (lat != null && lon != null) {
-          if (lat >= 49.1 && lat <= 51.6 && lon >= 29.2 && lon <= 32.2) {
-            final displayName = item['display_name']?.toString().split(',')[0].trim() ?? rawWord;
-            _learnedLocations[stem] = (lat, lon, displayName);
-            _kKyivLocations[stem] = (lat, lon, displayName);
+          if (lat >= 49.1 && lat <= 51.6 && lon >= 29.2 && lon <= 32.2 && _learnedLocations.length < 300) {
+            final rawDisplay = item['display_name']?.toString().split(',')[0].trim() ?? rawWord;
+            final cleanName = rawDisplay.replaceAll(RegExp(r'<[^>]*>'), '').replaceAll(RegExp(r'[\r\n\t]'), ' ').trim();
+            final safeName = cleanName.length > 40 ? cleanName.substring(0, 40) : cleanName;
+            _learnedLocations[stem] = (lat, lon, safeName);
+            _kKyivLocations[stem] = (lat, lon, safeName);
             await _saveLearnedLocations();
             _onNewLocationLearned?.call();
           }
@@ -994,8 +1008,9 @@ Future<void> _autoGeocodeLocation(String rawWord, String stem) async {
 }
 
 void _checkAndAutoGeocodeLocations(String text) {
+  if (_learnedLocations.length >= 300) return;
   final candidateRegex = RegExp(
-    r'(?:на|через|біля|поблизу|район[іу]?|повз|від|з|із|в бік|у бік|курсом на|вектор на)\s+([А-ЯІЇЄҐ][а-яіїєґ\x27ʼ\-]{3,})'
+    r'(?:на|через|біля|поблизу|район[іу]?|повз|від|з|із|в бік|у бік|курсом на|вектор на)\s+([А-ЯІЇЄҐ][а-яіїєґ\x27ʼ\-]{3,35})'
   );
   for (final m in candidateRegex.allMatches(text)) {
     final rawWord = m.group(1);
@@ -1003,6 +1018,7 @@ void _checkAndAutoGeocodeLocations(String text) {
     final rawLower = rawWord.toLowerCase();
     if (_kLocationStopWords.contains(rawLower)) continue;
     final stem = stemLocationCandidate(rawWord);
+    if (stem.length < 3 || stem.length > 35) continue;
     if (!_kKyivLocations.containsKey(stem) && !_pendingOrFailedGeocodes.contains(stem)) {
       _pendingOrFailedGeocodes.add(stem);
       _autoGeocodeLocation(rawWord, stem);
@@ -1014,8 +1030,8 @@ List<String> _dynamicExtraChannels = [];
 List<String> _dynamicDangerKeywords = [];
 List<String> _dynamicClearKeywords = [];
 
-const int kCurrentVersionCode = 18;
-const String kCurrentVersionName = '1.2.15';
+const int kCurrentVersionCode = 19;
+const String kCurrentVersionName = '1.2.16';
 
 class RemoteConfig {
   final int versionCode;
@@ -1042,14 +1058,41 @@ class RemoteConfig {
     final Map<String, (double, double, String)> locations = {};
     if (json['extra_locations'] is Map) {
       (json['extra_locations'] as Map).forEach((k, v) {
-        if (v is Map && v['lat'] != null && v['lon'] != null) {
+        final keyStr = k.toString().toLowerCase().trim();
+        if (keyStr.length >= 3 && keyStr.length <= 35 && v is Map && v['lat'] != null && v['lon'] != null) {
           final lat = (v['lat'] as num).toDouble();
           final lon = (v['lon'] as num).toDouble();
-          final name = v['name']?.toString() ?? k.toString();
-          locations[k.toString().toLowerCase().trim()] = (lat, lon, name);
+          if (lat >= 48.0 && lat <= 53.0 && lon >= 28.0 && lon <= 34.0) {
+            final rawName = (v['name'] ?? k).toString();
+            final cleanName = rawName.replaceAll(RegExp(r'<[^>]*>'), '').replaceAll(RegExp(r'[\r\n\t]'), ' ').trim();
+            final safeName = cleanName.length > 40 ? cleanName.substring(0, 40) : cleanName;
+            locations[keyStr] = (lat, lon, safeName);
+          }
         }
       });
     }
+
+    final channelRegex = RegExp(r'^[a-zA-Z0-9_]{4,32}$');
+    final List<String> channels = (json['extra_channels'] as List?)
+            ?.map((e) => e.toString().trim())
+            .where((ch) => channelRegex.hasMatch(ch))
+            .take(5)
+            .toList() ??
+        const [];
+
+    final List<String> dangerKws = (json['extra_danger_keywords'] as List?)
+            ?.map((e) => e.toString().trim())
+            .where((kw) => kw.length >= 3 && kw.length <= 40)
+            .take(30)
+            .toList() ??
+        const [];
+
+    final List<String> clearKws = (json['extra_clear_keywords'] as List?)
+            ?.map((e) => e.toString().trim())
+            .where((kw) => kw.length >= 3 && kw.length <= 40)
+            .take(30)
+            .toList() ??
+        const [];
 
     return RemoteConfig(
       versionCode: (json['version_code'] as num?)?.toInt() ?? kCurrentVersionCode,
@@ -1057,9 +1100,9 @@ class RemoteConfig {
       apkUrl: json['apk_url']?.toString() ?? '',
       changelog: json['changelog']?.toString() ?? '',
       extraLocations: locations,
-      extraChannels: (json['extra_channels'] as List?)?.map((e) => e.toString()).toList() ?? const [],
-      extraDangerKeywords: (json['extra_danger_keywords'] as List?)?.map((e) => e.toString()).toList() ?? const [],
-      extraClearKeywords: (json['extra_clear_keywords'] as List?)?.map((e) => e.toString()).toList() ?? const [],
+      extraChannels: channels,
+      extraDangerKeywords: dangerKws,
+      extraClearKeywords: clearKws,
     );
   }
 
@@ -1108,6 +1151,7 @@ class RemoteConfigNotifier extends Notifier<RemoteConfig> {
     try {
       final file = await _getAppStorageFile('remote_config_cache.json');
       if (file != null && await file.exists()) {
+        if (await file.length() > 524288) return;
         final content = await file.readAsString();
         final jsonMap = json.decode(content) as Map<String, dynamic>;
         final cfg = RemoteConfig.fromJson(jsonMap);
@@ -2041,29 +2085,30 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
   Future<void> _fetchData() async {
     bool fetchedFromBackend = false;
     
-    // 1. Локальний loopback тільки для емулятора Android на ПК (10.0.2.2)
-    // Якщо бекенд недоступний (як на реальному телефоні) — кешуємо недоступність та пропускаємо на 20 хв
-    if (_backendSkipCycles > 0) {
-      _backendSkipCycles--;
-    } else {
-      try {
-        final response = await http.get(
-          Uri.parse('http://10.0.2.2:8000/api/messages'),
-          headers: {'X-API-Key': _decodeLocalToken()},
-        ).timeout(const Duration(milliseconds: 400));
-        if (response.statusCode == 200 && response.bodyBytes.length <= 262144) {
-          final data = json.decode(utf8.decode(response.bodyBytes));
-          final List<dynamic> msgs = data['messages'] ?? [];
-          if (msgs.isNotEmpty) {
-            state = deduplicateMessages(msgs);
-            fetchedFromBackend = true;
-            _backendSkipCycles = 0;
+    // 1. Локальний loopback тільки для емулятора Android на ПК (10.0.2.2) виключно у Debug-режимі
+    if (kDebugMode) {
+      if (_backendSkipCycles > 0) {
+        _backendSkipCycles--;
+      } else {
+        try {
+          final response = await http.get(
+            Uri.parse('http://10.0.2.2:8000/api/messages'),
+            headers: {'X-API-Key': _decodeLocalToken()},
+          ).timeout(const Duration(milliseconds: 400));
+          if (response.statusCode == 200 && response.bodyBytes.length <= 262144) {
+            final data = json.decode(utf8.decode(response.bodyBytes));
+            final List<dynamic> msgs = data['messages'] ?? [];
+            if (msgs.isNotEmpty) {
+              state = deduplicateMessages(msgs);
+              fetchedFromBackend = true;
+              _backendSkipCycles = 0;
+            }
+          } else {
+            _backendSkipCycles = 200;
           }
-        } else {
+        } catch (_) {
           _backendSkipCycles = 200;
         }
-      } catch (_) {
-        _backendSkipCycles = 200;
       }
     }
 
@@ -2795,19 +2840,16 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
   Future<void> _downloadAndInstallApk(String apkUrl) async {
     final uri = Uri.tryParse(apkUrl);
-    final isHttps = uri?.scheme == 'https';
-    final isLocalHttp = uri?.scheme == 'http' &&
-        (uri?.host == '10.0.2.2' ||
-         uri?.host == 'localhost' ||
-         uri?.host == '127.0.0.1' ||
-         (uri?.host.startsWith('192.168.') ?? false) ||
-         (uri?.host.startsWith('10.') ?? false));
+    final allowedHosts = {'github.com', 'objects.githubusercontent.com', 'raw.githubusercontent.com'};
+    final isTrustedHttps = uri != null &&
+        uri.scheme == 'https' &&
+        allowedHosts.any((h) => uri.host == h || uri.host.endsWith('.$h'));
 
-    if (!isHttps && !isLocalHttp) {
+    if (!isTrustedHttps) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Тільки захищені HTTPS URL дозволені для оновлень'),
+            content: Text('Помилка безпеки: завантаження APK дозволено виключно через HTTPS з офіційних серверів GitHub'),
             backgroundColor: Colors.redAccent,
           ),
         );
@@ -2837,9 +2879,17 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
         apkFile = File(envTemp != null ? '$envTemp/update.apk' : 'update.apk');
       }
 
+      // Видаляємо попередній файл оновлення перед завантаженням
+      if (await apkFile.exists()) {
+        try {
+          await apkFile.delete();
+        } catch (_) {}
+      }
+
+      const int maxApkBytes = 157286400; // 150 МБ ліміт проти DoS
       final client = http.Client();
       try {
-        final request = http.Request('GET', Uri.parse(apkUrl));
+        final request = http.Request('GET', uri);
         final response = await client.send(request);
 
         if (response.statusCode != 200) {
@@ -2847,12 +2897,19 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
         }
 
         final totalBytes = response.contentLength ?? 0;
+        if (totalBytes > maxApkBytes) {
+          throw Exception('Розмір оновлення ($totalBytes байт) перевищує ліміт безпеки (150 МБ)');
+        }
+
         int receivedBytes = 0;
         final sink = apkFile.openWrite();
         try {
-          await for (final chunk in response.stream) {
-            sink.add(chunk);
+          await for (final chunk in response.stream.timeout(const Duration(seconds: 45))) {
             receivedBytes += chunk.length;
+            if (receivedBytes > maxApkBytes) {
+              throw Exception('Перевищено максимальний ліміт розміру файлу (150 МБ)');
+            }
+            sink.add(chunk);
             if (totalBytes > 0 && mounted) {
               setState(() {
                 _downloadProgress = (receivedBytes / totalBytes).clamp(0.0, 1.0);
@@ -2865,6 +2922,24 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
         }
       } finally {
         client.close();
+      }
+
+      // Перевірка сигнатури APK (ZIP Magic Header: 0x50, 0x4B, 0x03, 0x04)
+      if (await apkFile.exists()) {
+        final headerBytes = await apkFile.openRead(0, 4).first;
+        final bool isZipMagic = headerBytes.length >= 4 &&
+            headerBytes[0] == 0x50 &&
+            headerBytes[1] == 0x4B &&
+            headerBytes[2] == 0x03 &&
+            headerBytes[3] == 0x04;
+        if (!isZipMagic) {
+          try {
+            await apkFile.delete();
+          } catch (_) {}
+          throw Exception('Помилка безпеки: завантажений файл не є валідним APK-пакетом (невірна сигнатура)');
+        }
+      } else {
+        throw Exception('Файл оновлення не знайдено після завантаження');
       }
 
       if (mounted) {
@@ -3237,21 +3312,23 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
               hasInitiatedFetch = true;
               Future.microtask(() async {
                 try {
-                  // 1. Спроба завантажити з бекенду
-                  try {
-                    final res = await http.get(Uri.parse('http://127.0.0.1:8000/api/digest')).timeout(const Duration(seconds: 3));
-                    if (res.statusCode == 200) {
-                      final data = jsonDecode(utf8.decode(res.bodyBytes));
-                      if (data is Map && data['energy_news'] is List && data['transport_news'] is List) {
-                        setSheetState(() {
-                          energyNews = (data['energy_news'] as List).map((e) => cleanHtmlString(e.toString(), maxLength: 3500)).where((s) => s.isNotEmpty).toList();
-                          transportNews = (data['transport_news'] as List).map((e) => cleanHtmlString(e.toString(), maxLength: 3500)).where((s) => s.isNotEmpty).toList();
-                          isLoadingNews = false;
-                        });
-                        return;
+                  // 1. Спроба завантажити з бекенду (тільки у Debug-режимі)
+                  if (kDebugMode) {
+                    try {
+                      final res = await http.get(Uri.parse('http://127.0.0.1:8000/api/digest')).timeout(const Duration(seconds: 3));
+                      if (res.statusCode == 200) {
+                        final data = jsonDecode(utf8.decode(res.bodyBytes));
+                        if (data is Map && data['energy_news'] is List && data['transport_news'] is List) {
+                          setSheetState(() {
+                            energyNews = (data['energy_news'] as List).map((e) => cleanHtmlString(e.toString(), maxLength: 3500)).where((s) => s.isNotEmpty).toList();
+                            transportNews = (data['transport_news'] as List).map((e) => cleanHtmlString(e.toString(), maxLength: 3500)).where((s) => s.isNotEmpty).toList();
+                            isLoadingNews = false;
+                          });
+                          return;
+                        }
                       }
-                    }
-                  } catch (_) {}
+                    } catch (_) {}
+                  }
 
                   // 2. Автономний режим: прямий скрапінг t.me/s/dtek_ua та t.me/s/kyivpasstrans
                   final dtek = await fetchTelegramPreview('dtek_ua', 6);

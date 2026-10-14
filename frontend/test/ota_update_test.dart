@@ -58,30 +58,89 @@ void main() {
       expect(hasUpdateEmptyUrl, isFalse);
     });
 
-    test('OTA URL security validator accepts HTTPS and LAN HTTP for dev', () {
+    test('OTA URL security validator accepts only trusted HTTPS GitHub hosts and rejects HTTP/LAN', () {
       bool isAllowedUrl(String apkUrl) {
         final uri = Uri.tryParse(apkUrl);
-        final isHttps = uri?.scheme == 'https';
-        final isLocalHttp = uri?.scheme == 'http' &&
-            (uri?.host == '10.0.2.2' ||
-             uri?.host == 'localhost' ||
-             uri?.host == '127.0.0.1' ||
-             (uri?.host.startsWith('192.168.') ?? false) ||
-             (uri?.host.startsWith('10.') ?? false));
-        return isHttps || isLocalHttp;
+        final allowedHosts = {'github.com', 'objects.githubusercontent.com', 'raw.githubusercontent.com'};
+        final isTrustedHttps = uri != null &&
+            uri.scheme == 'https' &&
+            allowedHosts.any((h) => uri.host == h || uri.host.endsWith('.$h'));
+        return isTrustedHttps;
       }
 
-      // Valid HTTPS (Production GitHub Release)
+      // Valid HTTPS (Production GitHub Release & CDN)
       expect(isAllowedUrl('https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.4/app-release.apk'), isTrue);
+      expect(isAllowedUrl('https://objects.githubusercontent.com/github-production-release-asset-2e65be/12345/app-release.apk'), isTrue);
+      expect(isAllowedUrl('https://raw.githubusercontent.com/yakymgo-cyber/kyiv-alert-updates/main/app-release.apk'), isTrue);
 
-      // Valid Local LAN HTTP (Testing on same WiFi network)
-      expect(isAllowedUrl('http://192.168.0.101:8000/api/download-apk'), isTrue);
-      expect(isAllowedUrl('http://10.0.2.2:8000/api/download-apk'), isTrue);
-      expect(isAllowedUrl('http://localhost:8000/app.apk'), isTrue);
+      // Rejects LAN and localhost HTTP (Strict Zero Cleartext)
+      expect(isAllowedUrl('http://192.168.0.101:8000/api/download-apk'), isFalse);
+      expect(isAllowedUrl('http://10.0.2.2:8000/api/download-apk'), isFalse);
+      expect(isAllowedUrl('http://localhost:8000/app.apk'), isFalse);
 
-      // Invalid insecure non-local HTTP
+      // Rejects untrusted domains and non-HTTPS
+      expect(isAllowedUrl('https://evil-server.com/app.apk'), isFalse);
       expect(isAllowedUrl('http://untrusted-site.com/app.apk'), isFalse);
       expect(isAllowedUrl('ftp://example.com/app.apk'), isFalse);
+    });
+
+    test('RemoteConfig anti-poisoning filter sanitizes malicious inputs', () {
+      final poisonedJson = {
+        'version_code': 999,
+        'extra_channels': [
+          'valid_channel_1',
+          'valid_2',
+          'valid_3',
+          'valid_4',
+          'valid_5',
+          'extra_sixth_channel', // should be dropped by take(5)
+          'bad/path/traversal',  // should be dropped by regex
+          'sh',                  // too short (< 4 chars)
+          'a' * 35,              // too long (> 32 chars)
+          'bad channel with spaces',
+        ],
+        'extra_locations': {
+          'valid_place': {'lat': 50.45, 'lon': 30.52, 'name': '<b>Safe City</b>'},
+          'outside_ukraine': {'lat': 40.71, 'lon': -74.00, 'name': 'New York'},
+          'hi': {'lat': 50.45, 'lon': 30.52, 'name': 'Too short key'},
+          'a' * 40: {'lat': 50.45, 'lon': 30.52, 'name': 'Too long key'},
+        },
+        'extra_danger_keywords': [
+          'небезпека',
+          'ab', // too short (< 3)
+          'x' * 50, // too long (> 40)
+        ],
+      };
+
+      final cfg = RemoteConfig.fromJson(poisonedJson);
+      expect(cfg.extraChannels.length, equals(5));
+      expect(cfg.extraChannels, contains('valid_channel_1'));
+      expect(cfg.extraChannels.contains('bad/path/traversal'), isFalse);
+      expect(cfg.extraChannels.contains('extra_sixth_channel'), isFalse);
+
+      expect(cfg.extraLocations.containsKey('valid_place'), isTrue);
+      expect(cfg.extraLocations['valid_place']!.$3, equals('Safe City')); // stripped HTML
+      expect(cfg.extraLocations.containsKey('outside_ukraine'), isFalse);
+      expect(cfg.extraLocations.containsKey('hi'), isFalse);
+
+      expect(cfg.extraDangerKeywords.length, equals(1));
+      expect(cfg.extraDangerKeywords.first, equals('небезпека'));
+    });
+
+    test('ZIP Magic Header verification detects valid APK and rejects fake files', () {
+      final validZipHeader = [0x50, 0x4B, 0x03, 0x04, 0x14, 0x00];
+      final fakeHeader = [0x7F, 0x45, 0x4C, 0x46]; // ELF binary or text
+
+      bool isZip(List<int> bytes) {
+        return bytes.length >= 4 &&
+            bytes[0] == 0x50 &&
+            bytes[1] == 0x4B &&
+            bytes[2] == 0x03 &&
+            bytes[3] == 0x04;
+      }
+
+      expect(isZip(validZipHeader), isTrue);
+      expect(isZip(fakeHeader), isFalse);
     });
 
     testWidgets('Update banner UI renders when update is available', (tester) async {

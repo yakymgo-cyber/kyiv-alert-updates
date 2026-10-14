@@ -79,10 +79,10 @@ if (Test-Path $backendMainPath) {
 }
 
 # 2. Збірка релізного APK
-Write-Host "`nКомпіляція релізного APK (flutter build apk --release)..." -ForegroundColor Yellow
+Write-Host "`nКомпіляція релізного APK (flutter build apk --release --obfuscate --split-debug-info=build/debug-info)..." -ForegroundColor Yellow
 Push-Location (Join-Path $rootDir "frontend")
 try {
-    flutter build apk --release
+    flutter build apk --release --obfuscate --split-debug-info=build/debug-info
     if ($LASTEXITCODE -ne 0) {
         throw "Помилка при виконанні flutter build apk"
     }

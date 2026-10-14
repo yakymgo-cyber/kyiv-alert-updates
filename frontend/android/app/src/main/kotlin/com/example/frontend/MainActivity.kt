@@ -147,6 +147,12 @@ class MainActivity : FlutterActivity() {
                         val filePath = call.argument<String>("filePath")
                         if (filePath != null) {
                             val file = File(filePath)
+                            val canonicalFilePath = file.canonicalPath
+                            val canonicalCacheDir = cacheDir.canonicalPath
+                            if (!canonicalFilePath.startsWith(canonicalCacheDir)) {
+                                result.error("SECURITY_VIOLATION", "Path traversal detected: file must be located in app cache dir", null)
+                                return@setMethodCallHandler
+                            }
                             if (file.exists()) {
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                                     if (!packageManager.canRequestPackageInstalls()) {
