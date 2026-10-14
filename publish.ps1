@@ -140,11 +140,11 @@ if (-not $gitUser) {
 & git add .
 & git commit -m "Release v${newName}: $Changelog"
 try {
-    & git push origin HEAD 2>$null
+    & git push origin HEAD
     if ($LASTEXITCODE -eq 0) {
         Write-Host "Зміни успішно надіслано в репозиторій!" -ForegroundColor Green
     } else {
-        Write-Warning "Не вдалося виконати git push (потрібна авторизація SSH або Personal Access Token)."
+        Write-Warning "Не вдалося виконати git push."
     }
 } catch {
     Write-Warning "Помилка git push: $_"
@@ -154,11 +154,11 @@ try {
 Write-Host "`nСтворення GitHub Release через gh CLI..." -ForegroundColor Yellow
 if (Get-Command gh -ErrorAction SilentlyContinue) {
     try {
-        & gh release create "v$newName" "$apkPath" --title "v$newName" --notes "$Changelog" 2>$null
+        & gh release create "v$newName" "$apkPath" "$rootApkPath" --title "v$newName" --notes "$Changelog"
         if ($LASTEXITCODE -eq 0) {
             Write-Host "Реліз v$newName успішно створено та опубліковано на GitHub!" -ForegroundColor Green
         } else {
-            Write-Warning "gh release не зміг створити реліз (виконайте 'gh auth login' для авторизації CLI)."
+            Write-Warning "gh release повернув код помилки $LASTEXITCODE."
         }
     } catch {
         Write-Warning "Помилка при створенні релізу gh: $_"

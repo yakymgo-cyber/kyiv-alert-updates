@@ -40,7 +40,7 @@ if (-not (Test-Path $mainDartPath)) {
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $mainDartContent = [System.IO.File]::ReadAllText($mainDartPath, [System.Text.Encoding]::UTF8)
 
-$currentCodeMatch = [regex]::Match($mainDartContent, 'const int kCurrentVersionCode = (\d+);')
+$currentCodeMatch = [regex]::Match($mainDartContent, 'const int kCurrentVersionCode = (\\d+);')
 $currentNameMatch = [regex]::Match($mainDartContent, "const String kCurrentVersionName = '([^']+)';")
 
 if (-not $currentCodeMatch.Success) {
@@ -63,7 +63,7 @@ if ($parts.Length -eq 3) {
 Write-Host "Оновлення версії: $oldName (Build $oldCode) -> $newName (Build $newCode)" -ForegroundColor Green
 
 # Оновлення frontend/lib/main.dart
-$mainDartContent = [regex]::Replace($mainDartContent, 'const int kCurrentVersionCode = \d+;', "const int kCurrentVersionCode = $newCode;")
+$mainDartContent = [regex]::Replace($mainDartContent, 'const int kCurrentVersionCode = \\d+;', "const int kCurrentVersionCode = $newCode;")
 $mainDartContent = [regex]::Replace($mainDartContent, "const String kCurrentVersionName = '[^']+';", "const String kCurrentVersionName = '$newName';")
 [System.IO.File]::WriteAllText($mainDartPath, $mainDartContent, $utf8NoBom)
 
@@ -71,7 +71,7 @@ $mainDartContent = [regex]::Replace($mainDartContent, "const String kCurrentVers
 $pubspecPath = Join-Path $rootDir "frontend/pubspec.yaml"
 if (Test-Path $pubspecPath) {
     $pubspecContent = [System.IO.File]::ReadAllText($pubspecPath, [System.Text.Encoding]::UTF8)
-    $pubspecContent = [regex]::Replace($pubspecContent, 'version:\s*\d+\.\d+\.\d+\+\d+', "version: $newName+$newCode")
+    $pubspecContent = [regex]::Replace($pubspecContent, 'version:\\s*\\d+\\.\\d+\\.\\d+\\+\\d+', "version: $newName+$newCode")
     [System.IO.File]::WriteAllText($pubspecPath, $pubspecContent, $utf8NoBom)
 }
 
@@ -79,8 +79,8 @@ if (Test-Path $pubspecPath) {
 $backendMainPath = Join-Path $rootDir "backend/main.py"
 if (Test-Path $backendMainPath) {
     $backendMainContent = [System.IO.File]::ReadAllText($backendMainPath, [System.Text.Encoding]::UTF8)
-    $backendMainContent = [regex]::Replace($backendMainContent, '"version_code":\s*\d+,', "`"version_code`": $newCode,")
-    $backendMainContent = [regex]::Replace($backendMainContent, '"version_name":\s*"[^"]+",', "`"version_name`": `"$newName`",")
+    $backendMainContent = [regex]::Replace($backendMainContent, '\"version_code\":\\s*\\d+,', "`\"version_code`\": $newCode,")
+    $backendMainContent = [regex]::Replace($backendMainContent, '\"version_name\":\\s*\"[^\"]+\",', "`\"version_name`\": `\"$newName`\",")
     [System.IO.File]::WriteAllText($backendMainPath, $backendMainContent, $utf8NoBom)
 }
 
@@ -114,7 +114,7 @@ $repoOwner = "yakymgo-cyber"
 $repoName = "kyiv-alert-updates"
 try {
     $remoteUrl = (& git config --get remote.origin.url).Trim()
-    if ($remoteUrl -match 'github\.com[:/]([^/]+)/([^/\.]+)(?:\.git)?') {
+    if ($remoteUrl -match 'github\\.com[:/]([^/]+)/([^/\\.]+)(?:\\.git)?') {
         $repoOwner = $matches[1]
         $repoName = $matches[2]
     }
@@ -142,11 +142,11 @@ if (-not $gitUser) {
 & git add .
 & git commit -m "Release v${newName}: $Changelog"
 try {
-    & git push origin HEAD 2>$null
+    & git push origin HEAD
     if ($LASTEXITCODE -eq 0) {
         Write-Host "Зміни успішно надіслано в репозиторій!" -ForegroundColor Green
     } else {
-        Write-Warning "Не вдалося виконати git push (потрібна авторизація SSH або Personal Access Token)."
+        Write-Warning "Не вдалося виконати git push."
     }
 } catch {
     Write-Warning "Помилка git push: $_"
@@ -156,11 +156,11 @@ try {
 Write-Host "`nСтворення GitHub Release через gh CLI..." -ForegroundColor Yellow
 if (Get-Command gh -ErrorAction SilentlyContinue) {
     try {
-        & gh release create "v$newName" "$apkPath" --title "v$newName" --notes "$Changelog" 2>$null
+        & gh release create "v$newName" "$apkPath" "$rootApkPath" --title "v$newName" --notes "$Changelog"
         if ($LASTEXITCODE -eq 0) {
             Write-Host "Реліз v$newName успішно створено та опубліковано на GitHub!" -ForegroundColor Green
         } else {
-            Write-Warning "gh release не зміг створити реліз (виконайте 'gh auth login' для авторизації CLI)."
+            Write-Warning "gh release повернув код помилки $LASTEXITCODE."
         }
     } catch {
         Write-Warning "Помилка при створенні релізу gh: $_"
@@ -175,4 +175,4 @@ Write-Host "Релізний APK: $apkPath" -ForegroundColor Cyan
 
 with open(r'C:\Projects\kyiv-alert-app\publish.ps1', 'w', encoding='utf-8-sig') as f:
     f.write(script_content.strip())
-print("Successfully updated publish.ps1 with safe UTF-8 python config updater")
+print("Successfully regenerated publish.ps1 with UTF-8 BOM")
