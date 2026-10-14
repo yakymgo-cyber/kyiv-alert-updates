@@ -938,8 +938,8 @@ List<String> _dynamicExtraChannels = [];
 List<String> _dynamicDangerKeywords = [];
 List<String> _dynamicClearKeywords = [];
 
-const int kCurrentVersionCode = 10;
-const String kCurrentVersionName = '1.2.7';
+const int kCurrentVersionCode = 11;
+const String kCurrentVersionName = '1.2.8';
 
 class RemoteConfig {
   final int versionCode;
@@ -1272,13 +1272,48 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
   }
 
   List<Map<String, dynamic>> parseLocalThreats(String text) {
+    // 1. Специфічні стоп-слова всеукраїнських зведень та інших регіонів
+    const globalDigestStopWords = [
+      'кроп', 'кропивницьк', 'знам\'ян', 'знамян', 'олександрі', 'павлиш', 
+      'горішні плавні', 'омельник', 'лихівка', 'жовті води', 'карлівка', 
+      'берестин', 'чутове', 'магдалинівк', 'кобеля', 'перещепин', 'долинськ',
+      'устинівк', 'широке', 'кривий ріг', 'херсонщин', 'миколаївщин', 'запоріжж',
+      'дніпропетров', 'харківщин', 'сумщин', 'донеччин', 'луганщин', 'одещин'
+    ];
+
+    final tLower = text.toLowerCase();
+    final bool hasGlobalStopWord = globalDigestStopWords.any((sw) {
+      if (sw == 'олександрі') {
+        return tLower.contains('олександрі') && !tLower.contains('олександрів');
+      }
+      return tLower.contains(sw);
+    });
+    if (hasGlobalStopWord) {
+      // Якщо це глобальне зведення іншого регіону — одразу повертаємо порожній список (ігноруємо)
+      return [];
+    }
+
+    // 2. Фільтр на занадто велику кількість унікальних географічних збігів у одному пості
+    // Якщо в одному повідомленні згадується 4 або більше різних локацій — це дайджест, а не точкова ціль
+    final Set<String> uniqueLocationsFound = {};
+    _kKyivLocations.forEach((key, data) {
+      if (tLower.contains(key)) {
+        uniqueLocationsFound.add(data.$3);
+      }
+    });
+
+    if (uniqueLocationsFound.length >= 4 && !tLower.contains('->') && !tLower.contains('—>') && !tLower.contains('-->')) {
+      // Це зведення-простиня з багатьма містами — відсіюємо
+      return [];
+    }
+
     _checkAndAutoGeocodeLocations(text);
     final globalAlt = _extractAltitude(text);
     final globalThreat = _analyzeLocalThreat(text, altitudeMeters: globalAlt);
     final textWithoutReply = text.replaceAll(RegExp(r'^↪️.*?\n'), '');
-    final tLower = textWithoutReply.toLowerCase();
+    final cleanLower = textWithoutReply.toLowerCase();
 
-    final bool hasMultipleDrones = RegExp(r'(?:^|\s)(?:[1-9]\s*(?:х|x|шт)?|ще один|кілька|групи|декілька|шахеди|бпла|цілі)(?:\s|$)').hasMatch(tLower);
+    final bool hasMultipleDrones = RegExp(r'(?:^|\s)(?:[1-9]\s*(?:х|x|шт)?|ще один|кілька|групи|декілька|шахеди|бпла|цілі)(?:\s|$)').hasMatch(cleanLower);
     final bool hasSplitters = textWithoutReply.contains(' та ') || textWithoutReply.contains(' і ') || textWithoutReply.contains(',');
     List<String> lines = [];
     for (final rawLine in textWithoutReply.split('\n')) {
@@ -1691,6 +1726,41 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
 
           final msgType = _categorizeLocalMessage(cleanText);
           if (msgType == 'ignore') continue;
+
+          // 1. Специфічні стоп-слова всеукраїнських зведень та інших регіонів
+          const globalDigestStopWords = [
+            'кроп', 'кропивницьк', 'знам\'ян', 'знамян', 'олександрі', 'павлиш', 
+            'горішні плавні', 'омельник', 'лихівка', 'жовті води', 'карлівка', 
+            'берестин', 'чутове', 'магдалинівк', 'кобеля', 'перещепин', 'долинськ',
+            'устинівк', 'широке', 'кривий ріг', 'херсонщин', 'миколаївщин', 'запоріжж',
+            'дніпропетров', 'харківщин', 'сумщин', 'донеччин', 'луганщин', 'одещин'
+          ];
+
+          final tLower = cleanText.toLowerCase();
+          final bool hasGlobalStopWord = globalDigestStopWords.any((sw) {
+            if (sw == 'олександрі') {
+              return tLower.contains('олександрі') && !tLower.contains('олександрів');
+            }
+            return tLower.contains(sw);
+          });
+          if (hasGlobalStopWord) {
+            // Якщо це глобальне зведення іншого регіону — одразу ігноруємо
+            continue;
+          }
+
+          // 2. Фільтр на занадто велику кількість унікальних географічних збігів у одному пості
+          // Якщо в одному повідомленні згадується 4 або більше різних локацій — це дайджест, а не точкова ціль
+          final Set<String> uniqueLocationsFound = {};
+          _kKyivLocations.forEach((key, data) {
+            if (tLower.contains(key)) {
+              uniqueLocationsFound.add(data.$3);
+            }
+          });
+
+          if (uniqueLocationsFound.length >= 4 && !tLower.contains('->') && !tLower.contains('—>') && !tLower.contains('-->')) {
+            // Це зведення-простиня з багатьма містами — відсіюємо
+            continue;
+          }
 
           final lowerCheck = cleanText.toLowerCase();
 

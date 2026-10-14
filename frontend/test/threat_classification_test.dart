@@ -542,6 +542,32 @@ void main() {
       final space = notifier.parseLocalThreats('Залітають у повітряний простір');
       expect(space.isEmpty, isTrue);
     });
+
+    test('Global digest stop words (Кропивницький, Знамʼянка, Олександрія, Дніпропетровськ тощо) are ignored immediately', () {
+      final t1 = notifier.parseLocalThreats('БпЛА через Знам\'янку на Олександрію');
+      expect(t1.isEmpty, isTrue);
+
+      final t2 = notifier.parseLocalThreats('Кропивницький, група шахедів курсом на Павлиш');
+      expect(t2.isEmpty, isTrue);
+
+      final t3 = notifier.parseLocalThreats('Дніпропетровщина: рух БпЛА повз Жовті Води');
+      expect(t3.isEmpty, isTrue);
+
+      final t4 = notifier.parseLocalThreats('Харківщина та Сумщина під ударом КАБів');
+      expect(t4.isEmpty, isTrue);
+    });
+
+    test('Digest messages with 4+ unique locations without arrows are filtered out', () {
+      final digest = notifier.parseLocalThreats('Шахеди фіксуються в районах: Бориспіль, Бровари, Васильків, Обухів, Фастів');
+      expect(digest.isEmpty, isTrue);
+    });
+
+    test('Kyiv Oleksandrivka is preserved and not blocked by Oleksandriya stop word', () {
+      final t = notifier.parseLocalThreats('Шахед через Олександрівку на Бровари');
+      expect(t.isNotEmpty, isTrue);
+      final path = t.first['path'] as List<dynamic>;
+      expect(path.any((p) => p['name'].toString().contains('Олександрівка')), isTrue);
+    });
   });
 }
 
