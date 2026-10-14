@@ -148,6 +148,21 @@ class MainActivity : FlutterActivity() {
                         if (filePath != null) {
                             val file = File(filePath)
                             if (file.exists()) {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    if (!packageManager.canRequestPackageInstalls()) {
+                                        try {
+                                            val manageIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                                                data = Uri.parse("package:$packageName")
+                                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                            }
+                                            startActivity(manageIntent)
+                                        } catch (se: Exception) {
+                                            se.printStackTrace()
+                                        }
+                                        result.error("PERMISSION_REQUIRED", "Потрібно дозволити 'Встановлювати невідомі додатки'", null)
+                                        return@setMethodCallHandler
+                                    }
+                                }
                                 val apkUri = androidx.core.content.FileProvider.getUriForFile(
                                     applicationContext,
                                     "${applicationContext.packageName}.fileprovider",
@@ -168,6 +183,29 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         e.printStackTrace()
                         result.error("INSTALL_ERROR", e.message, null)
+                    }
+                }
+                "canRequestPackageInstalls" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        result.success(packageManager.canRequestPackageInstalls())
+                    } else {
+                        result.success(true)
+                    }
+                }
+                "openUnknownAppSourcesSettings" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        try {
+                            val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                                data = Uri.parse("package:$packageName")
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("SETTINGS_ERROR", e.message, null)
+                        }
+                    } else {
+                        result.success(true)
                     }
                 }
                 "getCacheDir" -> {

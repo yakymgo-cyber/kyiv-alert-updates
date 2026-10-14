@@ -938,8 +938,8 @@ List<String> _dynamicExtraChannels = [];
 List<String> _dynamicDangerKeywords = [];
 List<String> _dynamicClearKeywords = [];
 
-const int kCurrentVersionCode = 8;
-const String kCurrentVersionName = '1.2.5';
+const int kCurrentVersionCode = 9;
+const String kCurrentVersionName = '1.2.6';
 
 class RemoteConfig {
   final int versionCode;
@@ -1010,16 +1010,22 @@ class RemoteConfigNotifier extends Notifier<RemoteConfig> {
 
   @override
   RemoteConfig build() {
-    _loadFromCache();
-    _fetchRemoteConfig();
+    _init();
     _refreshTimer?.cancel();
-    _refreshTimer = Timer.periodic(const Duration(minutes: 30), (_) {
+    _refreshTimer = Timer.periodic(const Duration(minutes: 15), (_) {
       _fetchRemoteConfig();
     });
     ref.onDispose(() {
       _refreshTimer?.cancel();
     });
     return const RemoteConfig();
+  }
+
+  Future<void> _init() async {
+    // 1. Спочатку завантажуємо кеш, щоб миттєво підтягнути локальні дані без блокування
+    await _loadFromCache();
+    // 2. Робимо мережевий запит із повторними спробами (на випадок затримки мережі при старті/ребуті)
+    await _fetchRemoteConfigWithRetries();
   }
 
   Future<void> _loadFromCache() async {
@@ -1029,12 +1035,15 @@ class RemoteConfigNotifier extends Notifier<RemoteConfig> {
         final content = await file.readAsString();
         final jsonMap = json.decode(content) as Map<String, dynamic>;
         final cfg = RemoteConfig.fromJson(jsonMap);
-        state = cfg;
-        await _loadLearnedLocations();
-        _kKyivLocations = {..._kBaseKyivLocations, ...cfg.extraLocations, ..._learnedLocations};
-        _dynamicExtraChannels = cfg.extraChannels;
-        _dynamicDangerKeywords = cfg.extraDangerKeywords;
-        _dynamicClearKeywords = cfg.extraClearKeywords;
+        // Захист від затирання: оновлюємо стан з кешу тільки якщо поточний стан є дефолтним або кеш новіший
+        if (state.versionCode <= cfg.versionCode) {
+          state = cfg;
+          await _loadLearnedLocations();
+          _kKyivLocations = {..._kBaseKyivLocations, ...cfg.extraLocations, ..._learnedLocations};
+          _dynamicExtraChannels = cfg.extraChannels;
+          _dynamicDangerKeywords = cfg.extraDangerKeywords;
+          _dynamicClearKeywords = cfg.extraClearKeywords;
+        }
       }
     } catch (_) {}
   }
@@ -1048,17 +1057,36 @@ class RemoteConfigNotifier extends Notifier<RemoteConfig> {
     } catch (_) {}
   }
 
-  Future<void> _fetchRemoteConfig() async {
+  Future<void> _fetchRemoteConfigWithRetries() async {
+    bool ok = await _fetchRemoteConfig();
+    if (!ok) {
+      // Перша повторна спроба через 4 секунди (якщо Wi-Fi/LTE ще підключається після перезавантаження)
+      await Future.delayed(const Duration(seconds: 4));
+      ok = await _fetchRemoteConfig();
+      if (!ok) {
+        // Друга повторна спроба через 10 секунд
+        await Future.delayed(const Duration(seconds: 10));
+        await _fetchRemoteConfig();
+      }
+    }
+  }
+
+  Future<bool> _fetchRemoteConfig() async {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
     final urls = [
-      'https://raw.githubusercontent.com/yakymgo-cyber/kyiv-alert-updates/main/remote_config.json',
+      'https://raw.githubusercontent.com/yakymgo-cyber/kyiv-alert-updates/main/remote_config.json?t=$timestamp',
     ];
 
     for (final url in urls) {
       try {
         final response = await http.get(
           Uri.parse(url),
-          headers: {'Cache-Control': 'no-cache', 'Pragma': 'no-cache'},
-        ).timeout(const Duration(seconds: 5));
+          headers: {
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0',
+          },
+        ).timeout(const Duration(seconds: 12));
         if (response.statusCode == 200) {
           final jsonMap = json.decode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
           final cfg = RemoteConfig.fromJson(jsonMap);
@@ -1067,14 +1095,17 @@ class RemoteConfigNotifier extends Notifier<RemoteConfig> {
           _dynamicExtraChannels = cfg.extraChannels;
           _dynamicDangerKeywords = cfg.extraDangerKeywords;
           _dynamicClearKeywords = cfg.extraClearKeywords;
-          _saveToCache(cfg);
-          break;
+          await _saveToCache(cfg);
+          return true;
         }
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('RemoteConfig fetch error: $e');
+      }
     }
+    return false;
   }
 
-  Future<void> refresh() => _fetchRemoteConfig();
+  Future<bool> refresh() => _fetchRemoteConfig();
 }
 
 final remoteConfigProvider = NotifierProvider<RemoteConfigNotifier, RemoteConfig>(() {
@@ -2103,7 +2134,7 @@ class MainScreen extends ConsumerStatefulWidget {
   ConsumerState<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends ConsumerState<MainScreen> {
+class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObserver {
   final MapController _mapController = MapController();
   final Set<String> _alertedLocationThreatKeys = {};
 
@@ -2314,10 +2345,80 @@ class _MainScreenState extends ConsumerState<MainScreen> {
     );
   }
 
+  DateTime? _lastResumeCheck;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initAndroidPermissions();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _replayPlayTimer?.cancel();
+    _widgetSyncDebounceTimer?.cancel();
+    _rulerClearTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      final now = DateTime.now();
+      if (_lastResumeCheck == null || now.difference(_lastResumeCheck!).inSeconds > 60) {
+        _lastResumeCheck = now;
+        ref.read(remoteConfigProvider.notifier).refresh();
+      }
+    }
+  }
+
+  Future<void> _manualCheckForUpdates(BuildContext context) async {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.cyanAccent),
+            ),
+            SizedBox(width: 12),
+            Text('Перевіряємо наявність оновлень...'),
+          ],
+        ),
+        duration: Duration(seconds: 2),
+      ),
+    );
+    final ok = await ref.read(remoteConfigProvider.notifier).refresh();
+    if (!mounted) return;
+    final cfg = ref.read(remoteConfigProvider);
+    if (cfg.versionCode > kCurrentVersionCode && cfg.apkUrl.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('🚀 Доступне оновлення v${cfg.versionName} (збірка ${cfg.versionCode})! Банер зʼявився вгорі.'),
+          backgroundColor: Colors.purple.shade700,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } else if (ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('✅ У вас встановлена найновіша версія (v$kCurrentVersionName, збірка $kCurrentVersionCode).'),
+          backgroundColor: Colors.green.shade800,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('⚠️ Не вдалося звʼязатися із сервером оновлень. Перевірте зʼєднання з мережею.'),
+          backgroundColor: Colors.orangeAccent,
+          duration: Duration(seconds: 4),
+        ),
+      );
+    }
   }
 
   void _initAndroidPermissions() {
@@ -2346,14 +2447,6 @@ class _MainScreenState extends ConsumerState<MainScreen> {
       const channel = MethodChannel('ua.kyiv.alert.monitor/widget');
       await channel.invokeMethod('requestIgnoreBatteryOptimizations');
     } catch (_) {}
-  }
-
-  @override
-  void dispose() {
-    _replayPlayTimer?.cancel();
-    _widgetSyncDebounceTimer?.cancel();
-    _rulerClearTimer?.cancel();
-    super.dispose();
   }
 
   Widget _buildFeedFilterChip({
@@ -2538,7 +2631,23 @@ class _MainScreenState extends ConsumerState<MainScreen> {
 
       if (!kIsWeb && Platform.isAndroid) {
         const channel = MethodChannel('ua.kyiv.alert.monitor/widget');
-        await channel.invokeMethod('installApk', {'filePath': apkFile.path});
+        try {
+          await channel.invokeMethod('installApk', {'filePath': apkFile.path});
+        } on PlatformException catch (pe) {
+          if (pe.code == 'PERMISSION_REQUIRED') {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('⚠️ Дозвольте "Встановлювати невідомі додатки" на відкритому екрані та натисніть "Оновити" ще раз.'),
+                  duration: Duration(seconds: 7),
+                  backgroundColor: Colors.amber,
+                ),
+              );
+            }
+            return;
+          }
+          rethrow;
+        }
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -4050,9 +4159,14 @@ class _MainScreenState extends ConsumerState<MainScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Kyiv Alert Monitor 🇺🇦', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('Kyiv Alert 🇺🇦', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
         centerTitle: true,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.system_update_alt_rounded, color: Colors.cyanAccent),
+            tooltip: 'Перевірити оновлення',
+            onPressed: () => _manualCheckForUpdates(context),
+          ),
           IconButton(
             icon: const Icon(Icons.coffee_outlined, color: Colors.amberAccent),
             tooltip: 'Ранковий брифінг',

@@ -1,8 +1,8 @@
 {
   "version_code": 9,
   "version_name": "1.2.6",
-  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.5/app-release.apk",
-  "changelog": "Тестове оновлення по повітрю (OTA): перевірка системи оновлень",
+  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.6/app-release.apk",
+  "changelog": "Виправлення системи оновлень OTA, ручна перевірка в меню та автоматичний запит дозволу на встановлення",
   "extra_locations": {
     "новосілки": {
       "lat": 50.3547,
