@@ -1004,8 +1004,8 @@ List<String> _dynamicExtraChannels = [];
 List<String> _dynamicDangerKeywords = [];
 List<String> _dynamicClearKeywords = [];
 
-const int kCurrentVersionCode = 14;
-const String kCurrentVersionName = '1.2.11';
+const int kCurrentVersionCode = 15;
+const String kCurrentVersionName = '1.2.12';
 
 class RemoteConfig {
   final int versionCode;
@@ -1178,8 +1178,9 @@ final remoteConfigProvider = NotifierProvider<RemoteConfigNotifier, RemoteConfig
   return RemoteConfigNotifier();
 });
 
-String cleanHtmlString(String html) {
-  final safeHtml = html.length > 4000 ? html.substring(0, 4000) : html;
+String cleanHtmlString(String html, {int maxLength = 600}) {
+  final maxSafe = math.max(maxLength + 500, 4000);
+  final safeHtml = html.length > maxSafe ? html.substring(0, maxSafe) : html;
   var text = safeHtml.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
   text = text.replaceAll(RegExp(r'<[^>]+>'), '');
   text = text
@@ -1221,12 +1222,13 @@ String cleanHtmlString(String html) {
     if (line.trim().isNotEmpty) cleanLines.add(line.trim());
   }
   final joined = cleanLines.join('\n');
-  if (joined.length <= 600) return joined;
-  final lastSpace = joined.lastIndexOf(' ', 600);
-  return (lastSpace > 500) ? '${joined.substring(0, lastSpace)}...' : '${joined.substring(0, 600)}...';
+  if (joined.length <= maxLength) return joined;
+  final lastSpace = joined.lastIndexOf(' ', maxLength);
+  final minThreshold = maxLength > 100 ? maxLength - 100 : maxLength;
+  return (lastSpace > minThreshold) ? '${joined.substring(0, lastSpace)}...' : '${joined.substring(0, maxLength)}...';
 }
 
-String cleanHtmlText(String html) => cleanHtmlString(html);
+String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html, maxLength: maxLength);
 
 class MessagesNotifier extends Notifier<List<dynamic>> {
   Timer? _timer;
@@ -1409,17 +1411,19 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
       return [];
     }
 
-    // 2. Фільтр на занадто велику кількість унікальних географічних збігів у одному пості
-    // Якщо в одному повідомленні згадується 4 або більше різних локацій — це дайджест, а не точкова ціль
-    final Set<String> uniqueLocationsFound = {};
-    _kKyivLocations.forEach((key, data) {
-      if (tLower.contains(key)) {
-        uniqueLocationsFound.add(data.$3);
-      }
-    });
+    // 2. Фільтр на всеукраїнські та міжрегіональні дайджести
+    // Якщо всі локації належать Київщині / Києву — НІКОЛИ не блокуємо
+    final Set<String> externalMatches = {};
+    for (final r in _kFarRegions) {
+      if (tLower.contains(r)) externalMatches.add(r);
+    }
+    for (final b in _kExternalBorderKeys) {
+      if (tLower.contains(b)) externalMatches.add(b);
+    }
 
-    if (uniqueLocationsFound.length >= 4 && !tLower.contains('->') && !tLower.contains('—>') && !tLower.contains('-->')) {
-      // Це зведення-простиня з багатьма містами — відсіюємо
+    final bool hasTrajectory = tLower.contains('->') || tLower.contains('—>') || tLower.contains('-->');
+    if ((externalMatches.length >= 3 && !hasTrajectory) || externalMatches.length >= 4) {
+      // Це зведення-простиня з багатьма зовнішніми регіонами — відсіюємо
       return [];
     }
 
@@ -1743,8 +1747,8 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
     return parsed;
   }
 
-  String cleanHtmlText(String html) => cleanHtmlString(html);
-  String _cleanHtmlText(String html) => cleanHtmlString(html);
+  String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html, maxLength: maxLength);
+  String _cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html, maxLength: maxLength);
 
   String _decodeLocalToken() {
     const encoded = [49, 3, 51, 12, 5, 59, 22, 63, 8, 46, 5, 9, 63, 25, 40, 31, 46, 5, 99, 99, 104, 107];
@@ -1778,7 +1782,7 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
         final blocks = html.split('tgme_widget_message_wrap');
         final List<Map<String, dynamic>> chMsgs = [];
 
-        final startIdx = blocks.length > 8 ? blocks.length - 8 : 1;
+        final startIdx = blocks.length > 18 ? blocks.length - 18 : 1;
         for (int i = startIdx; i < blocks.length; i++) {
           final b = blocks[i];
           final replyTextMatches = RegExp(r'tgme_widget_message_reply_text[^>]*>([\s\S]*?)</div>').allMatches(b);
@@ -1796,7 +1800,7 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
           try {
             msgTime = DateTime.parse(timeMatch.group(1)!).toUtc();
           } catch (_) {}
-          if (msgTime != null && DateTime.now().toUtc().difference(msgTime).inHours >= 6) {
+          if (msgTime != null && DateTime.now().toUtc().difference(msgTime).inHours >= 12) {
             continue;
           }
 
@@ -1831,17 +1835,19 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
             continue;
           }
 
-          // 2. Фільтр на занадто велику кількість унікальних географічних збігів у одному пості
-          // Якщо в одному повідомленні згадується 4 або більше різних локацій — це дайджест, а не точкова ціль
-          final Set<String> uniqueLocationsFound = {};
-          _kKyivLocations.forEach((key, data) {
-            if (tLower.contains(key)) {
-              uniqueLocationsFound.add(data.$3);
-            }
-          });
+          // 2. Фільтр на всеукраїнські та міжрегіональні дайджести
+          // Якщо всі локації належать Київщині / Києву — НІКОЛИ не блокуємо
+          final Set<String> externalMatches = {};
+          for (final r in _kFarRegions) {
+            if (tLower.contains(r)) externalMatches.add(r);
+          }
+          for (final b in _kExternalBorderKeys) {
+            if (tLower.contains(b)) externalMatches.add(b);
+          }
 
-          if (uniqueLocationsFound.length >= 4 && !tLower.contains('->') && !tLower.contains('—>') && !tLower.contains('-->')) {
-            // Це зведення-простиня з багатьма містами — відсіюємо
+          final bool hasTrajectory = tLower.contains('->') || tLower.contains('—>') || tLower.contains('-->');
+          if ((externalMatches.length >= 3 && !hasTrajectory) || externalMatches.length >= 4) {
+            // Це зведення-простиня з багатьма зовнішніми регіонами — відсіюємо
             continue;
           }
 
@@ -1915,7 +1921,7 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
     }
 
     allMsgs.sort((a, b) => b['date'].toString().compareTo(a['date'].toString()));
-    return deduplicateMessages(allMsgs).cast<Map<String, dynamic>>().take(40).toList();
+    return deduplicateMessages(allMsgs).cast<Map<String, dynamic>>().take(100).toList();
   }
 
   String _normalizeForDedup(String text) {
@@ -1953,7 +1959,7 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
       if (msg['date'] != null) {
         try {
           final msgTime = DateTime.parse(msg['date'].toString()).toUtc();
-          if (nowUtc.difference(msgTime).inHours >= 6) {
+          if (nowUtc.difference(msgTime).inHours >= 12) {
             continue;
           }
         } catch (_) {}
@@ -2388,7 +2394,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     for (final m in messages) {
       final text = (m['text'] ?? '').toString().toLowerCase();
       final dateStr = m['date']?.toString();
-      final mTime = (dateStr != null ? DateTime.tryParse(dateStr)?.toLocal() : null) ?? now;
+      final mTime = (dateStr != null ? DateTime.tryParse(dateStr)?.toUtc() : null) ?? now;
       if (now.difference(mTime).inMinutes.abs() > 180) continue;
       if (text.contains('відбій по ракетах') ||
           text.contains('відбій загрози кр') ||
@@ -2405,7 +2411,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     for (final m in messages) {
       final text = (m['text'] ?? '').toString().toLowerCase();
       final dateStr = m['date']?.toString();
-      final mTime = (dateStr != null ? DateTime.tryParse(dateStr)?.toLocal() : null) ?? now;
+      final mTime = (dateStr != null ? DateTime.tryParse(dateStr)?.toUtc() : null) ?? now;
       final diffMins = now.difference(mTime).inMinutes.abs();
       if (diffMins > 180) continue;
 
@@ -3158,14 +3164,20 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
               headers: {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'},
             ).timeout(const Duration(seconds: 7));
             if (response.statusCode == 200) {
-              final matches = RegExp(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', dotAll: true).allMatches(response.body);
+              final html = response.body;
+              final blocks = html.split('tgme_widget_message_wrap');
               final list = <String>[];
-              for (final m in matches) {
-                final raw = m.group(1);
-                if (raw != null) {
-                  final clean = cleanHtmlString(raw);
-                  if (clean.isNotEmpty) {
-                    list.add(clean);
+              final startIdx = blocks.length > limit * 3 ? blocks.length - limit * 3 : 1;
+              for (int i = startIdx; i < blocks.length; i++) {
+                final block = blocks[i];
+                final mainTextMatches = RegExp(r'tgme_widget_message_text(?![^>]*reply)[^>]*>([\s\S]*?)</div>').allMatches(block);
+                if (mainTextMatches.isNotEmpty) {
+                  final raw = mainTextMatches.first.group(1);
+                  if (raw != null) {
+                    final clean = cleanHtmlString(raw, maxLength: 3500);
+                    if (clean.isNotEmpty) {
+                      list.add(clean);
+                    }
                   }
                 }
               }
@@ -3195,8 +3207,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                       final data = jsonDecode(utf8.decode(res.bodyBytes));
                       if (data is Map && data['energy_news'] is List && data['transport_news'] is List) {
                         setSheetState(() {
-                          energyNews = (data['energy_news'] as List).map((e) => cleanHtmlString(e.toString())).where((s) => s.isNotEmpty).toList();
-                          transportNews = (data['transport_news'] as List).map((e) => cleanHtmlString(e.toString())).where((s) => s.isNotEmpty).toList();
+                          energyNews = (data['energy_news'] as List).map((e) => cleanHtmlString(e.toString(), maxLength: 3500)).where((s) => s.isNotEmpty).toList();
+                          transportNews = (data['transport_news'] as List).map((e) => cleanHtmlString(e.toString(), maxLength: 3500)).where((s) => s.isNotEmpty).toList();
                           isLoadingNews = false;
                         });
                         return;
@@ -3233,8 +3245,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                   }
 
                   setSheetState(() {
-                    energyNews = filteredEnergy.take(4).map((e) => cleanHtmlString(e)).where((s) => s.isNotEmpty).toList();
-                    transportNews = filteredTransport.take(4).map((e) => cleanHtmlString(e)).where((s) => s.isNotEmpty).toList();
+                    energyNews = filteredEnergy.take(4).map((e) => cleanHtmlString(e, maxLength: 3500)).where((s) => s.isNotEmpty).toList();
+                    transportNews = filteredTransport.take(4).map((e) => cleanHtmlString(e, maxLength: 3500)).where((s) => s.isNotEmpty).toList();
                     isLoadingNews = false;
                   });
                 } catch (_) {
@@ -3254,42 +3266,80 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
             int missileCount = 0;
             int ppoMentions = 0;
             DateTime? lastClearDt;
+            DateTime? activeBallisticUntil;
 
             const ppoKeywords = ['ппо', 'працює ппо', 'робота ппо', 'роботі ппо', 'збиття', 'збито', 'мінус', 'ліквідовано'];
             const clearKeywords = ['відбій', 'чисто', 'тихо', 'дорозвідка', 'локаційно втрачено', 'немає цілей'];
             const missileKeywords = [
-              'ракет', 'баліст', 'іскандер', 'кинджал', 'циркон', 'калібр',
-              'х-101', 'х-22', 'х-59', 'х-69', 'онікс', 'с-300', 'с-400'
+              'ракет', 'крилаті', 'баліст', 'іскандер', 'кинджал', 'циркон', 'калібр',
+              'х-101', 'х-22', 'х-32', 'х-59', 'х-69', 'онікс', 'с-300', 'с-400',
+              'швидкісна', 'швидкісні', 'виходи', 'багато цілей', 'цілей йде'
             ];
             const negativeMissileWords = ['не підтверд', 'не фіксу', 'хибн', 'відбій', 'чисто'];
 
             final Set<String> threatenedZoneNames = {};
             final activeZones = watchedLocations.where((l) => l.enabled).toList();
 
-            for (final msg in messages) {
+            // Фільтруємо повідомлення за останні 10 годин і сортуємо хронологічно
+            final recentMessages = messages.where((msg) {
+              if (msg['date'] == null) return false;
+              try {
+                final t = DateTime.parse(msg['date'].toString()).toUtc();
+                return !t.isBefore(cutoff);
+              } catch (_) {
+                return false;
+              }
+            }).toList();
+
+            recentMessages.sort((a, b) {
+              final da = DateTime.tryParse(a['date']?.toString() ?? '')?.toUtc() ?? DateTime.fromMillisecondsSinceEpoch(0);
+              final db = DateTime.tryParse(b['date']?.toString() ?? '')?.toUtc() ?? DateTime.fromMillisecondsSinceEpoch(0);
+              return da.compareTo(db);
+            });
+
+            for (final msg in recentMessages) {
               DateTime? msgTime;
-              if (msg['date'] != null) {
-                try {
-                  msgTime = DateTime.parse(msg['date']).toUtc();
-                } catch (_) {}
-              }
-              if (msgTime != null && msgTime.isBefore(cutoff)) {
-                continue;
-              }
+              try {
+                msgTime = DateTime.parse(msg['date'].toString()).toUtc();
+              } catch (_) {}
 
               final text = (msg['text'] ?? '').toString();
               final tLower = text.toLowerCase();
+              final bool hasNegative = negativeMissileWords.any((nw) => tLower.contains(nw));
+
+              // Перевірка на тригери ракет / балістики (включно з короткими тривожними постами)
+              final bool isExplicitBallisticTrigger = !hasNegative && (
+                missileKeywords.any((mk) => tLower.contains(mk)) ||
+                text.contains('УВАГА') ||
+                text.contains('ЦІЛЬ') ||
+                text.contains('ПУСК') ||
+                (text.trim().length <= 35 && text.contains('!!') && !tLower.contains('шахед') && !tLower.contains('бпла'))
+              );
+
+              if (isExplicitBallisticTrigger && msgTime != null) {
+                final windowEnd = msgTime.add(const Duration(minutes: 6));
+                if (activeBallisticUntil == null || windowEnd.isAfter(activeBallisticUntil)) {
+                  activeBallisticUntil = windowEnd;
+                }
+              }
+
+              final bool inBallisticWindow = msgTime != null &&
+                  activeBallisticUntil != null &&
+                  (msgTime.isBefore(activeBallisticUntil) || msgTime.isAtSameMomentAs(activeBallisticUntil));
 
               final threats = (msg['threats'] as List?) ?? [];
-              final bool textHasMissile = !negativeMissileWords.any((nw) => tLower.contains(nw)) &&
-                  missileKeywords.any((mk) => tLower.contains(mk));
+              final bool textHasMissile = !hasNegative && (
+                missileKeywords.any((mk) => tLower.contains(mk)) ||
+                inBallisticWindow
+              );
 
               for (final t in threats) {
                 totalThreats++;
                 final tType = (t['type'] ?? 'shahed').toString().toLowerCase();
                 final tRaw = (t['rawText'] ?? '').toString().toLowerCase();
 
-                final bool isMissile = tType.contains('missile') ||
+                final bool isMissile = inBallisticWindow ||
+                    tType.contains('missile') ||
                     tType.contains('ballistic') ||
                     tType.contains('hypersonic') ||
                     tType.contains('cruise') ||
@@ -3328,8 +3378,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                 }
               }
 
-              // Якщо в пості не було окремих parsed threats, але є ракетні слова:
-              if (threats.isEmpty && textHasMissile) {
+              // Якщо в пості не було окремих parsed threats, але є ракетні слова або діє балістичне вікно:
+              if (threats.isEmpty && (textHasMissile || isExplicitBallisticTrigger || inBallisticWindow)) {
                 totalThreats++;
                 missileCount++;
               }
@@ -3526,7 +3576,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             ),
                           ] else if (energyNews.isNotEmpty) ...[
                             ...energyNews.take(2).map((item) {
-                              final cleanItem = cleanHtmlString(item);
+                              final cleanItem = cleanHtmlString(item, maxLength: 3500);
                               return _ExpandableNewsItem(
                                 text: cleanItem,
                                 bulletColor: Colors.amberAccent,
@@ -3577,7 +3627,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             ),
                           ] else if (transportNews.isNotEmpty) ...[
                             ...transportNews.take(3).map((item) {
-                              final cleanItem = cleanHtmlString(item);
+                              final cleanItem = cleanHtmlString(item, maxLength: 3500);
                               final bool isPriority = cleanItem.contains('[Святошин/Борщагівка]');
                               return _ExpandableNewsItem(
                                 text: cleanItem,
@@ -3692,6 +3742,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
   }
 
   void _showWatchedLocationsSheet(BuildContext context) {
+    final searchCtrl = TextEditingController();
+    final nameCtrl = TextEditingController();
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -3700,8 +3753,6 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) {
-        final searchCtrl = TextEditingController();
-        final nameCtrl = TextEditingController();
         double radiusKm = 4.0;
         List<Map<String, dynamic>> searchResults = [];
         bool isSearching = false;
@@ -4120,7 +4171,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
           },
         );
       },
-    );
+    ).whenComplete(() {
+      searchCtrl.dispose();
+      nameCtrl.dispose();
+    });
   }
 
   void _showAddPointFromMapDialog(BuildContext context, LatLng point) {
@@ -4247,7 +4301,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
           },
         );
       },
-    );
+    ).whenComplete(() {
+      nameCtrl.dispose();
+    });
   }
 
   @override

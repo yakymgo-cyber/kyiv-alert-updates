@@ -1,8 +1,8 @@
 {
-  "version_code": 14,
-  "version_name": "1.2.11",
-  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.11/app-release.apk",
-  "changelog": "Підключення Firebase Core та Firebase Analytics, налаштування Google Services",
+  "version_code": 15,
+  "version_name": "1.2.12",
+  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.12/app-release.apk",
+  "changelog": "Виправлення обрізання новин, підрахунку нічних ракет, фільтра дайджестів та витоків пам'яті",
   "extra_locations": {
     "новосілки": {
       "lat": 50.3547,

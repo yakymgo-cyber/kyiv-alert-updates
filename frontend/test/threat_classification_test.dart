@@ -243,7 +243,7 @@ void main() {
       expect(text2, equals("Увага! 'Ціль' “Київ”"));
     });
 
-    test('deduplicateMessages filters out messages older than 6 hours', () {
+    test('deduplicateMessages filters out messages older than 12 hours', () {
       final now = DateTime.now().toUtc();
       final recentMsg = {
         'id': '101',
@@ -254,8 +254,8 @@ void main() {
       final oldMsg = {
         'id': '102',
         'channel': 'test_ch',
-        'text': 'Старе повідомлення віком 7 годин',
-        'date': now.subtract(const Duration(hours: 7)).toIso8601String(),
+        'text': 'Старе повідомлення віком 14 годин',
+        'date': now.subtract(const Duration(hours: 14)).toIso8601String(),
       };
       final yesterdayMsg = {
         'id': '103',
@@ -557,9 +557,17 @@ void main() {
       expect(t4.isEmpty, isTrue);
     });
 
-    test('Digest messages with 4+ unique locations without arrows are filtered out', () {
-      final digest = notifier.parseLocalThreats('Шахеди фіксуються в районах: Бориспіль, Бровари, Васильків, Обухів, Фастів');
-      expect(digest.isEmpty, isTrue);
+    test('Digest messages with 3+ external regions or 4+ external border towns are filtered out', () {
+      final digestExternal = notifier.parseLocalThreats('Шахеди фіксуються в районах: Ніжин, Прилуки, Коростень, Радомишль, Пирятин');
+      expect(digestExternal.isEmpty, isTrue);
+
+      final digestRegions = notifier.parseLocalThreats('Дайджест: Полтава, Черкаси, Чернігів, Житомир зафіксовано рух БпЛА');
+      expect(digestRegions.isEmpty, isTrue);
+    });
+
+    test('Kyiv Oblast multi-location alerts are never dropped as false digests', () {
+      final kyivAlert = notifier.parseLocalThreats('Бориспіль, Бровари, Васильків, Обухів — увага, БпЛА у вашому напрямку');
+      expect(kyivAlert.isNotEmpty, isTrue);
     });
 
     test('Kyiv Oleksandrivka is preserved and not blocked by Oleksandriya stop word', () {
@@ -621,6 +629,50 @@ void main() {
       final negLower = negMsg.toLowerCase();
       final bool isNeg = negativeWords.any((nw) => negLower.contains(nw));
       expect(isNeg, isTrue);
+    });
+
+    test('cleanHtmlString respects custom maxLength for morning digest news', () {
+      final longNews = 'ДТЕК Київські регіональні електромережі повідомляють про стабілізаційні відключення. ' * 15;
+      expect(longNews.length > 1000, isTrue);
+
+      // Default cuts at 600
+      final defaultCleaned = cleanHtmlString(longNews);
+      expect(defaultCleaned.length <= 604, isTrue);
+
+      // Custom maxLength: 3500 preserves full news
+      final fullCleaned = cleanHtmlString(longNews, maxLength: 3500);
+      expect(fullCleaned.length > 1000, isTrue);
+      expect(fullCleaned.endsWith('...'), isFalse);
+    });
+
+    test('deduplicateMessages retains messages up to 12 hours old and drops older', () {
+      final notifier = MessagesNotifier();
+      final now = DateTime.now().toUtc();
+      final msgs = [
+        {
+          'id': 1,
+          'date': now.subtract(const Duration(hours: 11)).toIso8601String(),
+          'text': 'Повідомлення 11 годин тому',
+          'channel': 'test',
+        },
+        {
+          'id': 2,
+          'date': now.subtract(const Duration(hours: 8)).toIso8601String(),
+          'text': 'Повідомлення 8 годин тому',
+          'channel': 'test',
+        },
+        {
+          'id': 3,
+          'date': now.subtract(const Duration(hours: 13)).toIso8601String(),
+          'text': 'Повідомлення 13 годин тому (застаріле)',
+          'channel': 'test',
+        },
+      ];
+
+      final kept = notifier.deduplicateMessages(msgs);
+      expect(kept.any((m) => m['id'] == 1), isTrue, reason: '11 hours old should be retained');
+      expect(kept.any((m) => m['id'] == 2), isTrue, reason: '8 hours old should be retained');
+      expect(kept.any((m) => m['id'] == 3), isFalse, reason: '13 hours old should be dropped (> 12h)');
     });
   });
 }
