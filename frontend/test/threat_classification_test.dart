@@ -568,6 +568,24 @@ void main() {
       final path = t.first['path'] as List<dynamic>;
       expect(path.any((p) => p['name'].toString().contains('Олександрівка')), isTrue);
     });
+
+    test('Recognizes newly verified strategic Kyiv and Oblast settlements', () {
+      final t1 = notifier.parseLocalThreats('Шахед через Ставище на Білу Церкву');
+      expect(t1.isNotEmpty, isTrue);
+      expect(t1.first['path'].first['name'], contains('Ставище'));
+
+      final t2 = notifier.parseLocalThreats('БпЛА повз Красне на Обухів');
+      expect(t2.isNotEmpty, isTrue);
+      expect(t2.first['path'].first['name'], contains('Красне'));
+
+      final t3 = notifier.parseLocalThreats('Шахед через Семиполки на Бровари');
+      expect(t3.isNotEmpty, isTrue);
+      expect(t3.first['path'].first['name'], contains('Семиполки'));
+
+      final t4 = notifier.parseLocalThreats('Ціль через Дорогожичі на центр');
+      expect(t4.isNotEmpty, isTrue);
+      expect(t4.first['path'].first['name'], contains('Дорогожичі'));
+    });
   });
 }
 
