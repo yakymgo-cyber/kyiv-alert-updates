@@ -1,8 +1,8 @@
 {
-  "version_code": 17,
-  "version_name": "1.2.14",
-  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.14/app-release.apk",
-  "changelog": "Адаптація під реактивні БпЛА: поріг 2000м, швидкість 480 км/год, контекст атаки, розширена дистанція об'єднання та лінійка",
+  "version_code": 18,
+  "version_name": "1.2.15",
+  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.15/app-release.apk",
+  "changelog": "Налаштування збору аналітики Firebase Analytics та підключення FirebaseAnalyticsObserver",
   "extra_locations": {
     "новосілки": {
       "lat": 50.3547,

@@ -19,13 +19,19 @@ String _staticTestModeTime = DateTime.now().toUtc().toIso8601String();
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Ініціалізація Firebase
+  // Ініціалізація Firebase Analytics
   try {
     await Firebase.initializeApp();
-    
-    // Створення екземпляра Analytics (за бажанням можна логувати кастомні події)
-    // ignore: unused_local_variable
-    FirebaseAnalytics analytics = FirebaseAnalytics.instance;
+    final analytics = FirebaseAnalytics.instance;
+    await analytics.setAnalyticsCollectionEnabled(true);
+    await analytics.logAppOpen();
+    await analytics.logEvent(
+      name: 'app_open_kyiv_alert',
+      parameters: {
+        'version': kCurrentVersionName,
+        'build': kCurrentVersionCode,
+      },
+    );
   } catch (e) {
     debugPrint('Firebase init: $e');
   }
@@ -57,6 +63,10 @@ class KyivAlertApp extends StatelessWidget {
         ),
         cardColor: const Color(0xFF1E1E1E),
       ),
+      navigatorObservers: [
+        if (Firebase.apps.isNotEmpty)
+          FirebaseAnalyticsObserver(analytics: FirebaseAnalytics.instance),
+      ],
       home: const MainScreen(),
     );
   }
@@ -1004,8 +1014,8 @@ List<String> _dynamicExtraChannels = [];
 List<String> _dynamicDangerKeywords = [];
 List<String> _dynamicClearKeywords = [];
 
-const int kCurrentVersionCode = 17;
-const String kCurrentVersionName = '1.2.14';
+const int kCurrentVersionCode = 18;
+const String kCurrentVersionName = '1.2.15';
 
 class RemoteConfig {
   final int versionCode;
