@@ -2,8 +2,8 @@ import 'dart:math' as math;
 import 'package:latlong2/latlong.dart';
 
 /// Базові константи версії додатку за замовчуванням
-const int kDefaultVersionCode = 34;
-const String kDefaultVersionName = '1.2.31';
+const int kDefaultVersionCode = 35;
+const String kDefaultVersionName = '1.2.32';
 
 /// Модель зони спостереження (Зона безпеки)
 class WatchedLocation {
@@ -90,6 +90,9 @@ class RemoteConfig {
     if (json['extra_locations'] is Map) {
       (json['extra_locations'] as Map).forEach((k, v) {
         final keyStr = k.toString().toLowerCase().trim();
+        if (keyStr.startsWith('лук\'ян') || keyStr.startsWith('лукʼян') || keyStr.startsWith('лук’ян') || keyStr.startsWith('лукян')) {
+          return; // Лук'янівка — виключно метро Лук'янівка (Київ)!
+        }
         if (keyStr.length >= 3 && keyStr.length <= 35 && v is Map && v['lat'] != null && v['lon'] != null) {
           final lat = (v['lat'] as num).toDouble();
           final lon = (v['lon'] as num).toDouble();

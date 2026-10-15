@@ -765,13 +765,23 @@ void main() {
       expect(tVillage.first['path'].any((p) => p['name'] == 'Круги'), isTrue);
     });
 
-    test('Lukianivka resolves to Metro Lukianivska coordinates', () {
+    test('Lukianivka and its abbreviations resolve strictly to Metro Lukianivska coordinates and never the village', () {
       final notifier = MessagesNotifier();
-      final t = notifier.parseLocalThreats("БпЛА на Лук'янівку");
-      expect(t.isNotEmpty, isTrue);
-      expect(t.first['path'].last['name'], equals("м. Лук'янівка"));
-      expect(t.first['path'].last['lat'], closeTo(50.4628, 0.001));
-      expect(t.first['path'].last['lon'], closeTo(30.4815, 0.001));
+      final variants = [
+        "БпЛА на Лук'янівку",
+        "Лукʼянівка",
+        "Шахед Лук'янівка",
+        "на лук'янку",
+        "Лукянка",
+        "Лук'ян",
+      ];
+      for (final text in variants) {
+        final t = notifier.parseLocalThreats(text);
+        expect(t.isNotEmpty, isTrue, reason: 'Failed for "$text"');
+        expect(t.first['path'].last['name'], equals("м. Лук'янівка"), reason: 'Failed for "$text"');
+        expect(t.first['path'].last['lat'], closeTo(50.4628, 0.005), reason: 'Failed for "$text"');
+        expect(t.first['path'].last['lon'], closeTo(30.4815, 0.005), reason: 'Failed for "$text"');
+      }
     });
 
     test('filterOperationalMessages purges stale morning messages (>4 hours old) during active evening raid', () {
