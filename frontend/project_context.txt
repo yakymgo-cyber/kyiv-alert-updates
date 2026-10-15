@@ -3247,8 +3247,8 @@ final watchedLocationsProvider = NotifierProvider<WatchedLocationsNotifier, List
   return WatchedLocationsNotifier();
 });
 
-const int kCurrentVersionCode = 36;
-const String kCurrentVersionName = '1.2.33';
+const int kCurrentVersionCode = kDefaultVersionCode;
+const String kCurrentVersionName = kDefaultVersionName;
 
 
 class RemoteConfigNotifier extends Notifier<RemoteConfig> {
@@ -9021,8 +9021,8 @@ import 'dart:math' as math;
 import 'package:latlong2/latlong.dart';
 
 /// Базові константи версії додатку за замовчуванням
-const int kDefaultVersionCode = 37;
-const String kDefaultVersionName = '1.2.34';
+const int kDefaultVersionCode = 38;
+const String kDefaultVersionName = '1.2.35';
 
 /// Модель зони спостереження (Зона безпеки)
 class WatchedLocation {
@@ -13185,7 +13185,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.2.34+37
+version: 1.2.35+38
 
 environment:
   sdk: ^3.13.4
