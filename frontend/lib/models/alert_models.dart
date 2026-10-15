@@ -1,8 +1,9 @@
+import 'dart:math' as math;
 import 'package:latlong2/latlong.dart';
 
 /// Базові константи версії додатку за замовчуванням
-const int kDefaultVersionCode = 24;
-const String kDefaultVersionName = '1.2.21';
+const int kDefaultVersionCode = 25;
+const String kDefaultVersionName = '1.2.22';
 
 /// Модель зони спостереження (Зона безпеки)
 class WatchedLocation {
@@ -169,6 +170,8 @@ class ThreatMarker {
   final String rawText;
   final String channel;
   final bool isExiting;
+  final List<LatLng> waypoints; // усі точки, які послідовно пройшла ця ціль
+  final String? lastPostId; // ID останнього повідомлення в ланцюжку цієї цілі
 
   const ThreatMarker({
     required this.id,
@@ -183,7 +186,70 @@ class ThreatMarker {
     this.rawText = '',
     this.channel = '',
     this.isExiting = false,
+    this.waypoints = const [],
+    this.lastPostId,
   });
+
+  ThreatMarker copyWith({
+    String? id,
+    String? type,
+    String? label,
+    LatLng? point,
+    LatLng? prevPoint,
+    double? speed,
+    double? azimuth,
+    int? altitude,
+    DateTime? timestamp,
+    String? rawText,
+    String? channel,
+    bool? isExiting,
+    List<LatLng>? waypoints,
+    String? lastPostId,
+  }) {
+    return ThreatMarker(
+      id: id ?? this.id,
+      type: type ?? this.type,
+      label: label ?? this.label,
+      point: point ?? this.point,
+      prevPoint: prevPoint ?? this.prevPoint,
+      speed: speed ?? this.speed,
+      azimuth: azimuth ?? this.azimuth,
+      altitude: altitude ?? this.altitude,
+      timestamp: timestamp ?? this.timestamp,
+      rawText: rawText ?? this.rawText,
+      channel: channel ?? this.channel,
+      isExiting: isExiting ?? this.isExiting,
+      waypoints: waypoints ?? this.waypoints,
+      lastPostId: lastPostId ?? this.lastPostId,
+    );
+  }
+
+  /// Розрахунок кінематично екстрапольованої позиції вперед за курсом
+  LatLng currentExtrapolatedPosition(DateTime now) {
+    if (azimuth == null) return point;
+    final double elapsedSeconds = (now.difference(timestamp).inMilliseconds / 1000.0).clamp(0.0, 3600.0);
+    if (elapsedSeconds <= 0) return point;
+
+    // Зміщення вперед уздовж курсу bearing зі швидкістю speed (не далі ніж на 15 км)
+    final double speedMs = speed * (1000.0 / 3600.0);
+    final double distanceMeters = math.min(speedMs * elapsedSeconds, 15000.0);
+
+    const double earthRadius = 6378137.0;
+    final double d = distanceMeters / earthRadius;
+    final double bearingRad = azimuth! * math.pi / 180.0;
+    final double lat1 = point.latitude * math.pi / 180.0;
+    final double lon1 = point.longitude * math.pi / 180.0;
+
+    final double lat2 = math.asin(
+      math.sin(lat1) * math.cos(d) + math.cos(lat1) * math.sin(d) * math.cos(bearingRad),
+    );
+    final double lon2 = lon1 + math.atan2(
+      math.sin(bearingRad) * math.sin(d) * math.cos(lat1),
+      math.cos(d) - math.sin(lat1) * math.sin(lat2),
+    );
+
+    return LatLng(lat2 * 180.0 / math.pi, lon2 * 180.0 / math.pi);
+  }
 }
 
 /// Модель повідомлення з моніторингових каналів
@@ -196,6 +262,9 @@ class AlertMessage {
   final List<Map<String, dynamic>> threats;
   final String rawHtml;
   final int? replyToMsgId;
+  final String? postId;
+  final String? replyToPostId;
+  final String? replyQuotedText;
 
   const AlertMessage({
     required this.id,
@@ -206,6 +275,9 @@ class AlertMessage {
     this.threats = const [],
     this.rawHtml = '',
     this.replyToMsgId,
+    this.postId,
+    this.replyToPostId,
+    this.replyQuotedText,
   });
 
   Map<String, dynamic> toJson() => {
@@ -217,6 +289,13 @@ class AlertMessage {
     'threats': threats,
     'rawHtml': rawHtml,
     'reply_to_msg_id': replyToMsgId,
+    'replyToMsgId': replyToMsgId,
+    'post_id': postId,
+    'postId': postId,
+    'reply_to_post_id': replyToPostId,
+    'replyToPostId': replyToPostId,
+    'reply_quoted_text': replyQuotedText,
+    'replyQuotedText': replyQuotedText,
   };
 
   factory AlertMessage.fromJson(Map<String, dynamic> json) => AlertMessage(
@@ -228,6 +307,9 @@ class AlertMessage {
     threats: (json['threats'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? const [],
     rawHtml: json['rawHtml']?.toString() ?? '',
     replyToMsgId: (json['reply_to_msg_id'] as num?)?.toInt(),
+    postId: json['post_id']?.toString() ?? json['postId']?.toString(),
+    replyToPostId: json['reply_to_post_id']?.toString() ?? json['replyToPostId']?.toString(),
+    replyQuotedText: json['reply_quoted_text']?.toString() ?? json['replyQuotedText']?.toString(),
   );
 }
 

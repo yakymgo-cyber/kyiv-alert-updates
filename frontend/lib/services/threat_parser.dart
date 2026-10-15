@@ -272,7 +272,7 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
       'відбій', 'зелений', 'безпек', 'дорозвідка', 'чисто', 'локаційно', 'втрачено',
       'не спостерігається', 'не фіксується', 'немає цілей', 'без фіксаці', 'фіксацій немає',
       'не фіксуються', 'чисте небо', 'попередньо чисто', 'все походу', 'та все, нема', 'нема вже',
-      'немає', 'нема', 'зникло', 'зник', 'чисто по',
+      'немає', 'нема', 'зникло', 'зник', 'знив', 'чисто по',
     ];
     if (clear.any((kw) => tLower.contains(kw)) || dynamicClearKeywords.any((kw) => tLower.contains(kw))) return 'clear';
 
@@ -368,6 +368,11 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
       final bool hasNeighborOblast = neighborOblastKeys.any((r) => lineLower.contains(r));
       final bool hasFarRegion = kFarRegions.any((r) => lineLower.contains(r));
 
+      final bool isDniproRiverCorridor = lineLower.contains('по дніпру') ||
+          lineLower.contains('вздовж дніпра') ||
+          lineLower.contains('руслом дніпра') ||
+          lineLower.contains('через дніпро');
+
       // Для ключів сусідніх областей дозволяємо рядок ТІЛЬКИ тоді, коли в цьому ж самому рядку (line) є конкретне місто/село Київської області (не просто слово "київщина", а реальний населений пункт із kKyivLocations, що не входить у kExternalBorderKeys)
       final bool hasConcreteKyivLocInLine = kKyivLocations.keys.any((k) =>
         !kExternalBorderKeys.contains(k) &&
@@ -375,10 +380,10 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
         lineLower.contains(k)
       );
 
-      if (hasNeighborOblast && !hasConcreteKyivLocInLine) {
+      if (hasNeighborOblast && !hasConcreteKyivLocInLine && !isDniproRiverCorridor) {
         continue;
       }
-      if (hasFarRegion && !hasConcreteKyivLocInLine) {
+      if (hasFarRegion && !hasConcreteKyivLocInLine && !isDniproRiverCorridor) {
         continue;
       }
 
@@ -480,6 +485,20 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
           double lat = data.$1;
           double lon = data.$2;
           String displayName = data.$3;
+
+          if (itemKey.contains('новосілк') || itemKey.contains('новосілок') || displayName.contains('Новосілк')) {
+            // Динамічний вибір між Вишгородом (біля Десни) та Теремками
+            if (lineLower.contains('вишгород') || lineLower.contains('десн') || lineLower.contains('пірнов') ||
+                lineLower.contains('осещин') || lineLower.contains('лівий берег') || lineLower.contains('північ')) {
+              lat = 50.6280;
+              lon = 30.6120;
+              displayName = 'Новосілки (Вишгород)';
+            } else {
+              lat = 50.3550;
+              lon = 30.4560;
+              displayName = 'Новосілки (Теремки)';
+            }
+          }
 
           // Компасні модифікатори ("східніше", "західніше", "північніше", "південніше")
           final startIdx = math.max(0, item.$1 - 25);

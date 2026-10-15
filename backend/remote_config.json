@@ -1,8 +1,8 @@
 {
-  "version_code": 24,
-  "version_name": "1.2.21",
-  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.21/app-release.apk",
-  "changelog": "Переформатування верхнього табло: скорочено кнопки в AppBar, додано анімований випадаючий стовпчик налаштувань",
+  "version_code": 25,
+  "version_name": "1.2.22",
+  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.22/app-release.apk",
+  "changelog": "Telegram replies zero-lag scraping, route stitching & multi-segment waypoints trajectory, contextual gazetteer",
   "extra_locations": {
     "новосілки": {
       "lat": 50.3547,
