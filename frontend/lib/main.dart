@@ -253,8 +253,8 @@ final watchedLocationsProvider = NotifierProvider<WatchedLocationsNotifier, List
   return WatchedLocationsNotifier();
 });
 
-const int kCurrentVersionCode = 29;
-const String kCurrentVersionName = '1.2.26';
+const int kCurrentVersionCode = 30;
+const String kCurrentVersionName = '1.2.27';
 
 
 class RemoteConfigNotifier extends Notifier<RemoteConfig> {
@@ -2162,64 +2162,148 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                               if (isDestroyedMsg) {
                                 if (threats.isNotEmpty) {
-                                  // Перевірка чи вказано порядковий номер цілі (orderTag)
-                                  int? targetOrderTag;
-                                  if (msgTextLower.contains('перший') || msgTextLower.contains('1-й') || msgTextLower.contains('1й')) {
-                                    targetOrderTag = 1;
-                                  } else if (msgTextLower.contains('другий') || msgTextLower.contains('2-й') || msgTextLower.contains('2й')) {
-                                    targetOrderTag = 2;
-                                  } else if (msgTextLower.contains('третій') || msgTextLower.contains('3-й') || msgTextLower.contains('3й')) {
-                                    targetOrderTag = 3;
-                                  }
+                                  final msgChannel = msg['channel']?.toString();
+                                  final replyToPostId = normPost(msg['reply_to_post_id'] ?? msg['replyToPostId']);
+                                  final replyToId = msg['reply_to_msg_id'] ?? msg['replyToId'];
+                                  final replyQuoted = (msg['reply_quoted_text'] ?? msg['replyQuotedText'])?.toString().toLowerCase().trim();
+                                  final mergedMsgIds = (msg['merged_msg_ids'] as List?)?.cast<dynamic>() ?? [];
+                                  final mergedPostIds = (msg['merged_post_ids'] as List?)?.map((p) => normPost(p)).whereType<String>().toList() ?? [];
 
-                                  // Перевірка чи вказано конкретну локацію цілі: "Той що Брусилів мінус" або "Брусилів мінус"
-                                  String? matchedLocationKey;
-                                  for (final k in _kKyivLocations.keys) {
-                                    if (k.length >= 4 && msgTextLower.contains(k)) {
-                                      matchedLocationKey = k;
-                                      break;
-                                    }
-                                  }
+                                  int targetIdx = -1;
 
-                                  Map<String, dynamic>? targetToDestroy;
-
-                                  if (targetOrderTag != null) {
+                                  // 1. Reply matching by post_id or msg_id
+                                  if (replyToPostId != null || replyToId != null) {
                                     for (int ti = threats.length - 1; ti >= 0; ti--) {
-                                      if (threats[ti]['orderTag'] == targetOrderTag && threats[ti]['isDestroyed'] != true) {
-                                        targetToDestroy = threats[ti];
+                                      final candidate = threats[ti];
+                                      if (candidate['isDestroyed'] == true) continue;
+                                      final lastPostId = normPost(candidate['lastPostId']);
+                                      final histPosts = candidate['historyPostIds'] as Set<dynamic>?;
+                                      final normHistPosts = histPosts?.map((p) => normPost(p)).whereType<String>().toSet();
+                                      final history = candidate['historyMsgIds'] as Set<dynamic>?;
+
+                                      final bool matchPost = replyToPostId != null &&
+                                          (lastPostId == replyToPostId ||
+                                           (normHistPosts != null && (normHistPosts.contains(replyToPostId) || mergedPostIds.any((mp) => normHistPosts.contains(mp)))));
+                                      final bool matchMsgId = replyToId != null &&
+                                          (candidate['msgId'] == replyToId ||
+                                           (history != null && (history.contains(replyToId) || mergedMsgIds.any((mid) => history.contains(mid)))));
+
+                                      if (matchPost || matchMsgId) {
+                                        targetIdx = ti;
                                         break;
                                       }
                                     }
                                   }
 
-                                  if (targetToDestroy == null && matchedLocationKey != null) {
+                                  // 2. Reply matching by quoted text
+                                  if (targetIdx == -1 && replyQuoted != null && replyQuoted.isNotEmpty) {
+                                    final List<String> quotedLocKeys = [];
+                                    for (final k in _kKyivLocations.keys) {
+                                      if (k.length >= 3 && replyQuoted.contains(k)) {
+                                        quotedLocKeys.add(k);
+                                      }
+                                    }
                                     for (int ti = threats.length - 1; ti >= 0; ti--) {
-                                      final t = threats[ti];
-                                      if (t['isDestroyed'] == true) continue;
-                                      final r = (t['route'] ?? '').toString().toLowerCase();
-                                      final lNames = (t['locNames'] as List?)?.map((e) => e.toString().toLowerCase()).toList() ?? [];
-                                      if (r.contains(matchedLocationKey) || lNames.any((ln) => ln.contains(matchedLocationKey!))) {
-                                        targetToDestroy = t;
+                                      final candidate = threats[ti];
+                                      if (candidate['isDestroyed'] == true) continue;
+                                      if (msgChannel != null && candidate['channel'] != null && candidate['channel'] != msgChannel) {
+                                        continue;
+                                      }
+                                      final r = (candidate['route'] ?? '').toString().toLowerCase();
+                                      final txt = (candidate['text'] ?? '').toString().toLowerCase();
+                                      final rawT = (candidate['rawText'] ?? '').toString().toLowerCase();
+                                      final lNames = (candidate['locNames'] as List?)?.map((e) => e.toString().toLowerCase()).toList() ?? [];
+                                      bool match = quotedLocKeys.any((k) => r.contains(k) || txt.contains(k) || rawT.contains(k) || lNames.any((ln) => ln.contains(k)));
+                                      if (!match && txt.isNotEmpty && (replyQuoted.contains(txt) || txt.contains(replyQuoted))) {
+                                        match = true;
+                                      }
+                                      if (match) {
+                                        targetIdx = ti;
                                         break;
+                                      }
+                                    }
+                                    if (targetIdx == -1 && quotedLocKeys.isNotEmpty) {
+                                      for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                        final candidate = threats[ti];
+                                        if (candidate['isDestroyed'] == true) continue;
+                                        final r = (candidate['route'] ?? '').toString().toLowerCase();
+                                        final txt = (candidate['text'] ?? '').toString().toLowerCase();
+                                        final rawT = (candidate['rawText'] ?? '').toString().toLowerCase();
+                                        final lNames = (candidate['locNames'] as List?)?.map((e) => e.toString().toLowerCase()).toList() ?? [];
+                                        if (quotedLocKeys.any((k) => r.contains(k) || txt.contains(k) || rawT.contains(k) || lNames.any((ln) => ln.contains(k)))) {
+                                          targetIdx = ti;
+                                          break;
+                                        }
                                       }
                                     }
                                   }
 
-                                  if (targetToDestroy == null) {
+                                  // 3. Перевірка чи вказано порядковий номер цілі (orderTag)
+                                  if (targetIdx == -1) {
+                                    int? targetOrderTag;
+                                    if (msgTextLower.contains('перший') || msgTextLower.contains('1-й') || msgTextLower.contains('1й')) {
+                                      targetOrderTag = 1;
+                                    } else if (msgTextLower.contains('другий') || msgTextLower.contains('2-й') || msgTextLower.contains('2й')) {
+                                      targetOrderTag = 2;
+                                    } else if (msgTextLower.contains('третій') || msgTextLower.contains('3-й') || msgTextLower.contains('3й')) {
+                                      targetOrderTag = 3;
+                                    }
+
+                                    if (targetOrderTag != null) {
+                                      for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                        if (threats[ti]['orderTag'] == targetOrderTag && threats[ti]['isDestroyed'] != true) {
+                                          targetIdx = ti;
+                                          break;
+                                        }
+                                      }
+                                    }
+                                  }
+
+                                  // 4. Перевірка чи вказано конкретну локацію цілі: "Той що Брусилів мінус" або "Брусилів мінус"
+                                  if (targetIdx == -1) {
+                                    String? matchedLocationKey;
+                                    for (final k in _kKyivLocations.keys) {
+                                      if (k.length >= 4 && msgTextLower.contains(k)) {
+                                        matchedLocationKey = k;
+                                        break;
+                                      }
+                                    }
+
+                                    if (matchedLocationKey != null) {
+                                      for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                        final t = threats[ti];
+                                        if (t['isDestroyed'] == true) continue;
+                                        final r = (t['route'] ?? '').toString().toLowerCase();
+                                        final lNames = (t['locNames'] as List?)?.map((e) => e.toString().toLowerCase()).toList() ?? [];
+                                        if (r.contains(matchedLocationKey) || lNames.any((ln) => ln.contains(matchedLocationKey!))) {
+                                          targetIdx = ti;
+                                          break;
+                                        }
+                                      }
+                                    }
+                                  }
+
+                                  // 5. Fallback: найновіша незнищена ціль
+                                  if (targetIdx == -1) {
                                     for (int ti = threats.length - 1; ti >= 0; ti--) {
                                       if (threats[ti]['isDestroyed'] != true) {
-                                        targetToDestroy = threats[ti];
+                                        targetIdx = ti;
                                         break;
                                       }
                                     }
-                                    targetToDestroy ??= threats.last;
                                   }
 
-                                  targetToDestroy['isDestroyed'] = true;
-                                  targetToDestroy['destroyedAt'] = msgTime;
-                                  final p = (targetToDestroy['path'] as List<LatLng>?) ?? [];
-                                  if (p.isNotEmpty) {
-                                    recentlyClearedLocations.add((point: p.last, time: msgTime, channel: msg['channel']?.toString()));
+                                  if (targetIdx != -1) {
+                                    final targetToDestroy = threats[targetIdx];
+                                    targetToDestroy['isDestroyed'] = true;
+                                    targetToDestroy['destroyedAt'] = msgTime;
+                                    final p = (targetToDestroy['path'] as List<LatLng>?) ?? [];
+                                    if (p.isNotEmpty) {
+                                      recentlyClearedLocations.add((point: p.last, time: msgTime, channel: msg['channel']?.toString()));
+                                    }
+                                    if (_selectedThreatMsgId != null && (_selectedThreatMsgId == targetToDestroy['msgId'] || (targetToDestroy['historyMsgIds'] as Set?)?.contains(_selectedThreatMsgId) == true)) {
+                                      _selectedThreatMsgId = null;
+                                    }
                                   }
                                 }
                                 if (!hasDangerAlso) continue;
@@ -2320,15 +2404,18 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   ).toList();
 
                                   if (specificLocs.isNotEmpty) {
-                                    // Якщо вказано конкретний район/місто (наприклад "Бровари чисто") — гасимо тільки в радіусі <= 14 км
-                                    threats.removeWhere((t) {
+                                    // Якщо вказано конкретний район/місто (наприклад "Бровари чисто") — позначаємо як збиту/втрачену в радіусі <= 14 км
+                                    for (final t in threats) {
+                                      if (t['isDestroyed'] == true) continue;
                                       final path = t['path'] as List<LatLng>;
-                                      if (path.isEmpty) return false;
-                                      final shouldRemove = specificLocs.any((loc) {
+                                      if (path.isEmpty) continue;
+                                      final shouldClear = specificLocs.any((loc) {
                                         final locPt = LatLng(loc.value.$1, loc.value.$2);
                                         return const Distance().as(LengthUnit.Meter, locPt, path.last) <= 14000;
                                       });
-                                      if (shouldRemove) {
+                                      if (shouldClear) {
+                                        t['isDestroyed'] = true;
+                                        t['destroyedAt'] = msgTime;
                                         final pList = (t['waypoints'] as List<LatLng>?) ?? (t['path'] as List<LatLng>?) ?? path;
                                         for (final pt in pList) {
                                           recentlyClearedLocations.add((point: pt, time: msgTime, channel: msg['channel']?.toString()));
@@ -2337,8 +2424,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           _selectedThreatMsgId = null;
                                         }
                                       }
-                                      return shouldRemove;
-                                    });
+                                    }
                                   } else {
                                     // Без вказання конкретного району (наприклад "Немає", "Зникло", "Локаційно чисто", "Знив") —
                                     // гасимо ціль від ТОГО САМОГО каналу (до 10 хв) або точний reply (до 20 хв), або найсвіжішу ціль (до 180с)
@@ -2354,6 +2440,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       if (replyToPostId != null || replyToId != null) {
                                         for (int ti = threats.length - 1; ti >= 0; ti--) {
                                           final candidate = threats[ti];
+                                          if (candidate['isDestroyed'] == true) continue;
                                           final lastPostId = normPost(candidate['lastPostId']);
                                           final histPosts = candidate['historyPostIds'] as Set<dynamic>?;
                                           final normHistPosts = histPosts?.map((p) => normPost(p)).whereType<String>().toSet();
@@ -2385,6 +2472,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         }
                                         for (int ti = threats.length - 1; ti >= 0; ti--) {
                                           final candidate = threats[ti];
+                                          if (candidate['isDestroyed'] == true) continue;
                                           if (msgChannel != null && candidate['channel'] != null && candidate['channel'] != msgChannel) {
                                             continue;
                                           }
@@ -2404,6 +2492,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         if (targetIdx == -1 && quotedLocKeys.isNotEmpty) {
                                           for (int ti = threats.length - 1; ti >= 0; ti--) {
                                             final candidate = threats[ti];
+                                            if (candidate['isDestroyed'] == true) continue;
                                             final r = (candidate['route'] ?? '').toString().toLowerCase();
                                             final txt = (candidate['text'] ?? '').toString().toLowerCase();
                                             final rawT = (candidate['rawText'] ?? '').toString().toLowerCase();
@@ -2418,6 +2507,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                                       if (targetIdx == -1 && msgChannel != null) {
                                         for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                          if (threats[ti]['isDestroyed'] == true) continue;
                                           final tCh = threats[ti]['channel']?.toString();
                                           final lastUpd = threats[ti]['lastUpdated'] as DateTime?;
                                           if (tCh == msgChannel && lastUpd != null && msgTime.difference(lastUpd).inMinutes.abs() <= 10) {
@@ -2430,6 +2520,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       // 3. Якщо і так не знайдено — беремо найсвіжішу ціль за останні 180с
                                       if (targetIdx == -1) {
                                         for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                          if (threats[ti]['isDestroyed'] == true) continue;
                                           final lastUpd = threats[ti]['lastUpdated'] as DateTime?;
                                           if (lastUpd != null && msgTime.difference(lastUpd).inSeconds.abs() <= 180) {
                                             targetIdx = ti;
@@ -2439,8 +2530,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       }
 
                                       if (targetIdx != -1) {
-                                        final cleared = threats.removeAt(targetIdx);
+                                        final cleared = threats[targetIdx];
                                         cleared['isDestroyed'] = true;
+                                        cleared['destroyedAt'] = msgTime;
                                         final pList = (cleared['waypoints'] as List<LatLng>?) ?? (cleared['path'] as List<LatLng>?) ?? [];
                                         for (final pt in pList) {
                                           recentlyClearedLocations.add((point: pt, time: msgTime, channel: msg['channel']?.toString()));
@@ -3215,9 +3307,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                 }
                             }
 
-                            // Залишаємо активні цілі за Smart TTL (балістика 120с, КР 180с, БпЛА 300с, вихід з області 45с) та щойно збиті цілі (25с)
+                            // Залишаємо активні цілі за Smart TTL (балістика 120с, КР 180с, БпЛА 300с, вихід з області 45с) та щойно збиті цілі (35с для показу зеленої картки збиття)
                             threats = threats.where((t) {
-                              if (t['isDestroyed'] == true) return false;
+                              if (t['isDestroyed'] == true) {
+                                final destroyedAt = (t['destroyedAt'] as DateTime?) ?? (t['lastUpdated'] as DateTime?) ?? now;
+                                return now.difference(destroyedAt).inSeconds.abs() <= 35;
+                              }
                               final lastUpd = t['lastUpdated'] as DateTime?;
                               if (lastUpd == null) return true;
                               final int ttl = (t['ttl'] as int?) ?? getThreatTtlSeconds(t['type']?.toString() ?? '', isExitingOblast: t['isExitingOblast'] == true);
@@ -3370,6 +3465,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                           } else {
                             for (final loc in activeWatchedLocations) {
                               for (final t in threats) {
+                                if (t['isDestroyed'] == true) continue;
                                 final path = (t['path'] as List<LatLng>?) ?? [];
                                 if (path.isEmpty) continue;
 
@@ -3435,17 +3531,18 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             }
                           }
 
+                          final activeThreats = threats.where((t) => t['isDestroyed'] != true).toList();
                           int overallStatus = 1;
                           if (hasMissiles) {
                             overallStatus = 3;
-                          } else if (threats.isNotEmpty) {
+                          } else if (activeThreats.isNotEmpty) {
                             overallStatus = 2;
                           } else if (anyAlert) {
                             overallStatus = 2;
                           }
 
                           if (overallStatus == 3) {
-                            final threatKey = 'ballistic_alert:${threats.map((t) => t['msgId']).join(',')}';
+                            final threatKey = 'ballistic_alert:${activeThreats.map((t) => t['msgId']).join(',')}';
                             if (!_alertedLocationThreatKeys.contains(threatKey)) {
                               _alertedLocationThreatKeys.add(threatKey);
                               if (_isNightWatchMode) {
@@ -3478,9 +3575,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                           WidgetsBinding.instance.addPostFrameCallback((_) {
                             if (mounted) {
-                              _scheduleWidgetSync(alerts, threats, messages);
+                              _scheduleWidgetSync(alerts, activeThreats, messages);
                               LiveRadarNotificationService.instance.updateRadarStatus(
-                                threats: threats,
+                                threats: activeThreats,
                                 watchedLocations: watchedLocations,
                                 isAlertKyiv: alerts['м. Київ'] == true,
                                 isAlertRegion: alerts['Київська область'] == true,
@@ -4049,7 +4146,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   },
                                 ),
                               ],
-                              if (threats.isNotEmpty)
+                              if (threats.any((t) => t['isDestroyed'] != true))
                                 Positioned(
                                   top: isWakeupBannerVisible ? 60 : 16,
                                   right: 16,
@@ -4070,7 +4167,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                                 Container(width: 40, height: 4, margin: const EdgeInsets.only(bottom: 16), decoration: BoxDecoration(color: Colors.grey.shade600, borderRadius: BorderRadius.circular(2))),
                                                 const Text('Активні цілі на радарі (останні 5 хв)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
                                                 const SizedBox(height: 12),
-                                                ...threats.map((t) {
+                                                ...threats.where((t) => t['isDestroyed'] != true).map((t) {
                                                   final typeStr = t['type'].toString();
                                                   final isMissile = typeStr.contains('missile');
                                                   final isJet = typeStr == 'shahed_jet';
@@ -4123,7 +4220,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 20),
                                           const SizedBox(width: 8),
                                           Text(
-                                            'Активні цілі: ${threats.length}',
+                                            'Активні цілі: ${threats.where((t) => t['isDestroyed'] != true).length}',
                                             style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                                           )
                                         ],
@@ -5205,16 +5302,26 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
           final path = t['path'] as List<LatLng>;
           if (path.isEmpty) continue;
           final bool isDestroyed = t['isDestroyed'] == true;
-          if (isDestroyed) continue;
           final msgTime = (t['lastUpdated'] as DateTime?) ?? effectiveNow;
           final elapsedSec = effectiveNow.difference(msgTime).inMilliseconds / 1000.0;
+          final staggerDelay = (t['staggerDelay'] as num?)?.toDouble() ?? 0.0;
+          final effectiveElapsedSec = elapsedSec - staggerDelay;
+
+          if (isDestroyed) {
+            activePositions[i] = path.last;
+            activeRotations[i] = 0.0;
+            activeElapsedSecs[i] = elapsedSec;
+            activeEffectiveElapsedSecs[i] = effectiveElapsedSec;
+            activeSpeedMs[i] = 0.0;
+            activeGeoBearings[i] = 0.0;
+            continue;
+          }
+
           final int threatTtl = (t['ttl'] as int?) ?? getThreatTtlSeconds(t['type']?.toString() ?? '', isExitingOblast: t['isExitingOblast'] == true);
           if (elapsedSec > threatTtl) continue;
 
           final speedKmh = (t['speed'] as num?)?.toDouble() ?? 500.0;
           final speedMs = speedKmh * (1000.0 / 3600.0);
-          final staggerDelay = (t['staggerDelay'] as num?)?.toDouble() ?? 0.0;
-          final effectiveElapsedSec = elapsedSec - staggerDelay;
 
           final activeLeg = path.length >= 2 ? [path[path.length - 2], path.last] : path;
           double legDistance = 0;
@@ -5383,7 +5490,6 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
         for (var i = 0; i < widget.threats.length; i++) {
           if (!activePositions.containsKey(i)) continue;
           final t = widget.threats[i];
-          if (t['isDestroyed'] == true) continue;
           final path = t['path'] as List<LatLng>;
           final currentPos = activePositions[i]!;
           final rotationAngle = activeRotations[i]!;

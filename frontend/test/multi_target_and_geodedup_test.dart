@@ -466,7 +466,64 @@ void main() {
       expect((threats2[0]['path'] as List).length, equals(3));
     });
   });
+
+  group('Release v1.2.27: Green Shootdown Card & Active Threats Filter', () {
+    test('Destroyed threat is kept for 35s for green badge, but excluded from active threats count', () {
+      final now = DateTime.parse('2026-10-15T20:10:00Z');
+      final shootdownTime = DateTime.parse('2026-10-15T20:09:40Z'); // 20s ago
+
+      List<Map<String, dynamic>> threats = [
+        {
+          'msgId': 101,
+          'path': [const LatLng(50.45, 30.52), const LatLng(50.50, 30.60)],
+          'type': 'shahed',
+          'isDestroyed': true,
+          'destroyedAt': shootdownTime,
+          'lastUpdated': shootdownTime,
+        },
+        {
+          'msgId': 102,
+          'path': [const LatLng(50.35, 30.40)],
+          'type': 'shahed',
+          'isDestroyed': false,
+          'lastUpdated': now,
+        }
+      ];
+
+      // Smart TTL filter (at 20s after destruction)
+      threats = threats.where((t) {
+        if (t['isDestroyed'] == true) {
+          final destroyedAt = (t['destroyedAt'] as DateTime?) ?? (t['lastUpdated'] as DateTime?) ?? now;
+          return now.difference(destroyedAt).inSeconds.abs() <= 35;
+        }
+        return true;
+      }).toList();
+
+      // Total threats on map includes the destroyed one (for green badge rendering)
+      expect(threats.length, equals(2));
+      expect(threats.any((t) => t['isDestroyed'] == true), isTrue);
+
+      // Active threats count excludes destroyed threats
+      final activeThreats = threats.where((t) => t['isDestroyed'] != true).toList();
+      expect(activeThreats.length, equals(1));
+      expect(activeThreats.first['msgId'], equals(102));
+
+      // After 36 seconds, the destroyed threat is cleaned up from map
+      final futureNow = DateTime.parse('2026-10-15T20:10:16Z'); // 36s after shootdown
+      threats = threats.where((t) {
+        if (t['isDestroyed'] == true) {
+          final destroyedAt = (t['destroyedAt'] as DateTime?) ?? (t['lastUpdated'] as DateTime?) ?? futureNow;
+          return futureNow.difference(destroyedAt).inSeconds.abs() <= 35;
+        }
+        return true;
+      }).toList();
+
+      expect(threats.length, equals(1));
+      expect(threats.any((t) => t['isDestroyed'] == true), isFalse);
+    });
+  });
 }
+
 
 
 
