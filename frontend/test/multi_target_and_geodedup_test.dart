@@ -121,4 +121,51 @@ void main() {
       expect(deduped.length, equals(2));
     });
   });
+
+  group('Problem 4: Sequential Threat Tracking & Jet UAV Flight Vector', () {
+    test('Trakhtemyriv is present in kKyivLocations and gazetteer', () {
+      expect(kKyivLocations.containsKey('трахтемирів'), isTrue);
+      expect(kKyivLocations['трахтемирів']!.$1, closeTo(49.9850, 0.001));
+      expect(kKyivLocations['трахтемирів']!.$2, closeTo(31.3300, 0.001));
+      expect(kKyivLocations['трахтемирів']!.$3, equals('Трахтемирів'));
+      expect(kKyivLocations.containsKey('трахтемир'), isTrue);
+      expect(kKyivLocations.containsKey('трахтемиров'), isTrue);
+    });
+
+    test('Extracts high altitude for Jet UAVs up to 10000m', () {
+      expect(ThreatParser.extractAltitude('На Миронівку, 7700 м'), equals(7700));
+      expect(ThreatParser.extractAltitude('На Рокитне, 6200'), equals(6200));
+      expect(ThreatParser.extractAltitude('12000 м'), isNull); // > 10000m should be rejected
+    });
+
+    test('Categorizes "немає", "нема", "зник", "зникло" as clear messages', () {
+      expect(ThreatParser.categorizeLocalMessage('Немає'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('нема'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('зник'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('зникло'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('локаційно чисто'), equals('clear'));
+    });
+
+    test('Parses sequential jet drone locations correctly', () {
+      final t1 = ThreatParser.parseLocalThreats('Реактивний на Трахтемирів');
+      expect(t1.isNotEmpty, isTrue);
+      expect(t1.first['type'], equals('shahed_jet'));
+      expect((t1.first['path'] as List).first['lat'], closeTo(49.9850, 0.01));
+
+      final t2 = ThreatParser.parseLocalThreats('На Миронівку, 7700 м');
+      expect(t2.isNotEmpty, isTrue);
+      expect(t2.first['altitude'], equals('7700 м'));
+      expect((t2.first['path'] as List).first['lat'], closeTo(49.6580, 0.01));
+
+      final t3 = ThreatParser.parseLocalThreats('На Рокитне, 6200');
+      expect(t3.isNotEmpty, isTrue);
+      expect(t3.first['altitude'], equals('6200 м'));
+      expect((t3.first['path'] as List).first['lat'], closeTo(49.6939, 0.01));
+
+      final t4 = ThreatParser.parseLocalThreats('Вектор Володарка');
+      expect(t4.isNotEmpty, isTrue);
+      expect((t4.first['path'] as List).first['lat'], closeTo(49.5200, 0.01));
+    });
+  });
 }
+

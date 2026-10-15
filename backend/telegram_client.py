@@ -1173,13 +1173,18 @@ async def start_telegram_client():
                     else:
                         msg_type = "danger"
                     
+                    reply_to_id = getattr(message, 'reply_to_msg_id', None)
+                    if not reply_to_id and hasattr(message, 'reply_to') and message.reply_to:
+                        reply_to_id = getattr(message.reply_to, 'reply_to_msg_id', None)
+
                     raw_history.append({
                         "id": message.id, 
                         "text": clean_text, 
                         "date": message.date.isoformat(),
                         "type": msg_type,
                         "channel": channel_title,
-                        "threats": parsed_threats
+                        "threats": parsed_threats,
+                        "reply_to_msg_id": reply_to_id
                     })
         except Exception as e:
             print(f"Не вдалося отримати історію {ch_name}: {e}")
@@ -1263,13 +1268,18 @@ async def start_telegram_client():
             else:
                 msg_type = "danger"
 
+            reply_to_id = getattr(event.message, 'reply_to_msg_id', None)
+            if not reply_to_id and hasattr(event.message, 'reply_to') and event.message.reply_to:
+                reply_to_id = getattr(event.message.reply_to, 'reply_to_msg_id', None)
+
             new_msg = {
                 "id": event.message.id, 
                 "text": clean_text, 
                 "date": event.message.date.isoformat(),
                 "type": msg_type,
                 "channel": channel_name,
-                "threats": parsed_threats
+                "threats": parsed_threats,
+                "reply_to_msg_id": reply_to_id
             }
             latest_messages.insert(0, new_msg)
             if len(latest_messages) > 50:

@@ -1,8 +1,8 @@
 import 'package:latlong2/latlong.dart';
 
 /// Базові константи версії додатку за замовчуванням
-const int kDefaultVersionCode = 22;
-const String kDefaultVersionName = '1.2.19';
+const int kDefaultVersionCode = 23;
+const String kDefaultVersionName = '1.2.20';
 
 /// Модель зони спостереження (Зона безпеки)
 class WatchedLocation {
@@ -195,6 +195,7 @@ class AlertMessage {
   final String? type;
   final List<Map<String, dynamic>> threats;
   final String rawHtml;
+  final int? replyToMsgId;
 
   const AlertMessage({
     required this.id,
@@ -204,6 +205,7 @@ class AlertMessage {
     this.type,
     this.threats = const [],
     this.rawHtml = '',
+    this.replyToMsgId,
   });
 
   Map<String, dynamic> toJson() => {
@@ -214,6 +216,7 @@ class AlertMessage {
     'type': type,
     'threats': threats,
     'rawHtml': rawHtml,
+    'reply_to_msg_id': replyToMsgId,
   };
 
   factory AlertMessage.fromJson(Map<String, dynamic> json) => AlertMessage(
@@ -224,6 +227,7 @@ class AlertMessage {
     type: json['type']?.toString(),
     threats: (json['threats'] as List?)?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? const [],
     rawHtml: json['rawHtml']?.toString() ?? '',
+    replyToMsgId: (json['reply_to_msg_id'] as num?)?.toInt(),
   );
 }
 

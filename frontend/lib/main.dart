@@ -253,8 +253,8 @@ final watchedLocationsProvider = NotifierProvider<WatchedLocationsNotifier, List
   return WatchedLocationsNotifier();
 });
 
-const int kCurrentVersionCode = 22;
-const String kCurrentVersionName = '1.2.19';
+const int kCurrentVersionCode = 23;
+const String kCurrentVersionName = '1.2.20';
 
 
 class RemoteConfigNotifier extends Notifier<RemoteConfig> {
@@ -435,6 +435,8 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
               : RegExp(r'tgme_widget_message_text[^>]*>([\s\S]*?)</div>').allMatches(b).lastOrNull;
           final timeMatch = RegExp(r'<time datetime="([^"]+)"').firstMatch(b);
           final idMatch = RegExp(r'data-post="[^/]+/(\d+)"').firstMatch(b);
+          final replyIdMatch = RegExp(r'tgme_widget_message_reply[^>]*href="[^"]*/(\d+)"').firstMatch(b);
+          final int? replyToId = replyIdMatch != null ? int.tryParse(replyIdMatch.group(1)!) : null;
           if (textMatch == null || timeMatch == null) continue;
 
           DateTime? msgTime;
@@ -547,6 +549,7 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
             'date': timeMatch.group(1)!,
             'type': effectiveType,
             'channel': ch.$2,
+            'reply_to_msg_id': replyToId,
             'threats': threats,
           });
         }
@@ -2151,20 +2154,49 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       });
                                     });
                                   } else {
-                                    // Без вказання конкретного району — гасимо ТІЛЬКИ останню ціль,
-                                    // про яку йшлося в попередньому повідомленні за останні 2 хвилини (120с),
-                                    // але НЕ чіпаємо далекі активні цілі в області (як-от Тетіїв)!
+                                    // Без вказання конкретного району (наприклад "Немає", "Зникло", "Локаційно чисто") —
+                                    // гасимо ціль від ТОГО САМОГО каналу (до 10 хв) або точний reply (до 20 хв), або найсвіжішу ціль (до 180с)
                                     if (threats.isNotEmpty) {
-                                      int lastRecentIdx = -1;
-                                      for (int ti = threats.length - 1; ti >= 0; ti--) {
-                                        final lastUpd = threats[ti]['lastUpdated'] as DateTime?;
-                                        if (lastUpd != null && msgTime.difference(lastUpd).inSeconds.abs() <= 120) {
-                                          lastRecentIdx = ti;
-                                          break;
+                                      int targetIdx = -1;
+                                      final msgChannel = msg['channel']?.toString();
+                                      final replyToId = msg['reply_to_msg_id'];
+
+                                      // 1. Пріоритет: точний reply на повідомлення треку
+                                      if (replyToId != null) {
+                                        for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                          final history = threats[ti]['historyMsgIds'] as Set<dynamic>?;
+                                          if (threats[ti]['msgId'] == replyToId || (history != null && history.contains(replyToId))) {
+                                            targetIdx = ti;
+                                            break;
+                                          }
                                         }
                                       }
-                                      if (lastRecentIdx != -1) {
-                                        threats.removeAt(lastRecentIdx);
+
+                                      // 2. Якщо не знайдено за reply — шукаємо найновішу загрозу від цього ж каналу (до 10 хв)
+                                      if (targetIdx == -1 && msgChannel != null) {
+                                        for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                          final tCh = threats[ti]['channel']?.toString();
+                                          final lastUpd = threats[ti]['lastUpdated'] as DateTime?;
+                                          if (tCh == msgChannel && lastUpd != null && msgTime.difference(lastUpd).inMinutes.abs() <= 10) {
+                                            targetIdx = ti;
+                                            break;
+                                          }
+                                        }
+                                      }
+
+                                      // 3. Якщо і так не знайдено — беремо найсвіжішу ціль за останні 180с
+                                      if (targetIdx == -1) {
+                                        for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                          final lastUpd = threats[ti]['lastUpdated'] as DateTime?;
+                                          if (lastUpd != null && msgTime.difference(lastUpd).inSeconds.abs() <= 180) {
+                                            targetIdx = ti;
+                                            break;
+                                          }
+                                        }
+                                      }
+
+                                      if (targetIdx != -1) {
+                                        threats.removeAt(targetIdx);
                                       }
                                     }
                                   }
@@ -2364,6 +2396,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           existing['text'] = msgTextLower;
                                           existing['rawText'] = msg['text']?.toString() ?? '';
                                           existing['msgId'] = msg['id'];
+                                          final hist = (existing['historyMsgIds'] as Set<dynamic>? ?? <dynamic>{});
+                                          hist.add(msg['id']);
+                                          existing['historyMsgIds'] = hist;
                                           existing['channel'] = msg['channel'];
                                           existing['locNames'] = List<String>.from(locNames);
                                           // Заборона пониження класу цілі (No Downgrade Rule):
@@ -2431,30 +2466,55 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           continue;
                                         }
 
-                                        // Розрахунок дозволеної дистанції з урахуванням жорсткого кінематичного правила Multi-Target Tracking
+                                        // Перевірка на явну відповідь (reply) у Telegram-каналі:
+                                        final replyToId = msg['reply_to_msg_id'];
+                                        final existingHistory = existing['historyMsgIds'] as Set<dynamic>?;
+                                        final bool isExplicitReply = (replyToId != null &&
+                                            (existing['msgId'] == replyToId || (existingHistory != null && existingHistory.contains(replyToId))));
+
+                                        // Маркери наявності окремих/нових цілей
+                                        final bool hasMultiTargetMarker = msgTextLower.contains('ще ') ||
+                                            msgTextLower.contains('ще один') ||
+                                            msgTextLower.contains('ще 1') ||
+                                            msgTextLower.contains('ще 2') ||
+                                            msgTextLower.contains('новий') ||
+                                            msgTextLower.contains('інший') ||
+                                            msgTextLower.contains('пара ') ||
+                                            msgTextLower.contains('2х') ||
+                                            msgTextLower.contains('3х') ||
+                                            msgTextLower.contains('двоє');
+
+                                        if (hasMultiTargetMarker && !isExplicitReply) {
+                                          continue;
+                                        }
+
+                                        // Розрахунок дозволеної дистанції з урахуванням кінематики:
+                                        // Для реактивних БпЛА (480-600 км/год) вектор руху за 3-5 хв становить 30-50 км!
                                         final bool isAnyMissile = isMissileThreat || existingIsMissile || activeBallisticOrMissileContext;
                                         final bool isJetThreat = (existingType == 'shahed_jet' || rawType == 'shahed_jet');
                                         final double effSpeed = isAnyMissile ? math.max(speed, 5000.0) : (isJetThreat ? math.max(speed, 480.0) : speed);
 
-                                        // maxDistanceKm = (speedKmh * elapsedHours * 1.4).clamp(4.0, 22.0)
                                         final double maxDistanceKm = isAnyMissile
-                                            ? (effSpeed * timeDiffHours * 1.2).clamp(10.0, 80.0)
-                                            : (effSpeed * timeDiffHours * 1.4).clamp(4.0, 22.0);
+                                            ? (effSpeed * timeDiffHours * 1.2).clamp(10.0, 90.0)
+                                            : (isJetThreat
+                                                ? (effSpeed * timeDiffHours * 1.6).clamp(10.0, 70.0)
+                                                : (effSpeed * timeDiffHours * 1.4).clamp(4.0, 22.0));
                                         final double allowedDistMeters = maxDistanceKm * 1000.0;
+                                        final double maxAllowedLegMeters = isAnyMissile ? 90000.0 : (isJetThreat ? 70000.0 : 25000.0);
 
-                                        // Якщо нова точка знаходиться далі ніж allowedDistMeters (максимум 22 км для БпЛА) —
-                                        // це ОКРЕМА нова ціль! Не зливати і не видаляти стару ціль!
-                                        if (distMeters > allowedDistMeters) {
-                                          continue;
-                                        }
-
-                                        // Заборона малювання лінії вектора між точками з різних повідомлень, якщо відстань > 25 км
-                                        if (distMeters > 25000.0) {
-                                          continue;
+                                        // Перевірка допустимої відстані:
+                                        if (!isExplicitReply) {
+                                          if (distMeters > allowedDistMeters || distMeters > maxAllowedLegMeters) {
+                                            continue;
+                                          }
+                                        } else {
+                                          // Прямий Reply у Telegram гарантує послідовність повідомлень одного треку
+                                          if (distMeters > (isJetThreat ? 75000.0 : (isAnyMissile ? 95000.0 : 35000.0))) {
+                                            continue;
+                                          }
                                         }
 
                                         // Об'єднуємо послідовні точки однієї цілі
-                                        if (distMeters <= allowedDistMeters) {
                                         if (isAnyMissile) {
                                           if (existing['type'] != 'missile_hypersonic' && existing['type'] != 'missile_cruise') {
                                             existing['type'] = 'missile_ballistic';
@@ -2471,40 +2531,36 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         }
 
                                         bool pointAdded = false;
-                                        if (path.length >= 2) {
-                                          existingPath.clear();
-                                          existingPath.addAll(path);
-                                          existingNames.clear();
-                                          existingNames.addAll(locNames);
-                                          pointAdded = true;
-                                        } else {
-                                          for (int k = 0; k < path.length; k++) {
-                                            final pt = path[k];
-                                            final d = const Distance().as(LengthUnit.Meter, existingPath.last, pt);
-                                            if (d > 500 && d <= 25000.0) {
-                                              existingPath.add(pt);
-                                              pointAdded = true;
-                                              if (k < locNames.length && (existingNames.isEmpty || existingNames.last != locNames[k])) {
-                                                existingNames.add(locNames[k]);
-                                              }
+                                        for (int k = 0; k < path.length; k++) {
+                                          final pt = path[k];
+                                          final d = const Distance().as(LengthUnit.Meter, existingPath.last, pt);
+                                          if (d > 500 && (d <= maxAllowedLegMeters || isExplicitReply)) {
+                                            existingPath.add(pt);
+                                            pointAdded = true;
+                                            if (k < locNames.length && (existingNames.isEmpty || existingNames.last != locNames[k])) {
+                                              existingNames.add(locNames[k]);
                                             }
                                           }
                                         }
-                                          existing['route'] = existingNames.isNotEmpty ? existingNames.join(' → ') : existing['route'];
-                                          if (isExitingOblast) {
-                                            if (existing['route'] != null && !existing['route'].toString().contains('(Вихід з області)')) {
-                                              existing['route'] = '${existing['route']} (Вихід з області)';
-                                            }
-                                            existing['isExitingOblast'] = true;
-                                            existing['ttl'] = 45;
+
+                                        existing['route'] = existingNames.isNotEmpty ? existingNames.join(' → ') : existing['route'];
+                                        if (isExitingOblast) {
+                                          if (existing['route'] != null && !existing['route'].toString().contains('(Вихід з області)')) {
+                                            existing['route'] = '${existing['route']} (Вихід з області)';
                                           }
-                                          if (pointAdded) {
-                                            existing['lastUpdated'] = msgTime;
-                                          }
-                                          existing['text'] = msgTextLower;
-                                          existing['rawText'] = msg['text']?.toString() ?? '';
-                                          existing['msgId'] = msg['id'];
-                                          existing['channel'] = msg['channel'];
+                                          existing['isExitingOblast'] = true;
+                                          existing['ttl'] = 45;
+                                        }
+                                        if (pointAdded) {
+                                          existing['lastUpdated'] = msgTime;
+                                        }
+                                        existing['text'] = msgTextLower;
+                                        existing['rawText'] = msg['text']?.toString() ?? '';
+                                        existing['msgId'] = msg['id'];
+                                        final hist = (existing['historyMsgIds'] as Set<dynamic>? ?? <dynamic>{});
+                                        hist.add(msg['id']);
+                                        existing['historyMsgIds'] = hist;
+                                        existing['channel'] = msg['channel'];
                                           if (t['isCircling'] == true) existing['isCircling'] = true;
                                           if (t['altitude'] != null) existing['altitude'] = t['altitude'];
                                           if (t['altitudeMeters'] != null) {
@@ -2518,7 +2574,6 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           if (t['isDescending'] == true) existing['isDescending'] = true;
                                           mergedIntoExisting = true;
                                           break;
-                                        }
                                       }
                                     }
                                   }
@@ -2542,6 +2597,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       'text': msgTextLower,
                                       'rawText': msg['text']?.toString() ?? '',
                                       'msgId': msg['id'],
+                                      'historyMsgIds': <dynamic>{msg['id']},
                                       'channel': msg['channel'],
                                       'isCircling': t['isCircling'] == true,
                                       'altitude': t['altitude'],
@@ -2565,9 +2621,22 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   if (alt != null) {
                                     activeBallisticOrMissileContext = false;
                                   }
-                                  final msgChannel = msg['channel'];
+                                  final replyToId = msg['reply_to_msg_id'];
                                   Map<String, dynamic>? targetThreat;
-                                  for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                  if (replyToId != null) {
+                                    for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                      final candidate = threats[ti];
+                                      final history = candidate['historyMsgIds'] as Set<dynamic>?;
+                                      if (candidate['msgId'] == replyToId || (history != null && history.contains(replyToId))) {
+                                        targetThreat = candidate;
+                                        break;
+                                      }
+                                    }
+                                  }
+
+                                  final msgChannel = msg['channel'];
+                                  if (targetThreat == null) {
+                                    for (int ti = threats.length - 1; ti >= 0; ti--) {
                                     final candidate = threats[ti];
                                     if (msgChannel != null && candidate['channel'] != null && candidate['channel'] != msgChannel) {
                                       continue;
@@ -2577,6 +2646,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       targetThreat = candidate;
                                       break;
                                     }
+                                  }
+
                                   }
 
                                   if (targetThreat == null && threats.isNotEmpty) {

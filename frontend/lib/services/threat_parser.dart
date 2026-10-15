@@ -135,20 +135,22 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
 
   int? _extractAltitude(String text) {
     final tLower = text.toLowerCase();
-    final mExplicit = RegExp(r'(?:висот[аі]|h|alt)\s*[:=-]?\s*(\d{3,4})', caseSensitive: false).firstMatch(tLower);
+    final mExplicit = RegExp(r'(?:висот[аі]|h|alt)\s*[:=-]?\s*(\d{3,5})\b', caseSensitive: false).firstMatch(tLower);
     if (mExplicit != null) {
       final val = int.tryParse(mExplicit.group(1)!);
-      if (val != null && val >= 100 && val <= 15000) return val;
+      if (val != null && val >= 100 && val <= 10000) return val;
+      if (val != null && val > 10000) return null;
     }
-    final m = RegExp(r'(\d{3,4})\s*(?:м|метр|m)(?![а-яіїєґa-z])', caseSensitive: false).firstMatch(tLower);
+    final m = RegExp(r'\b(\d{3,5})\s*(?:м|метр|m)(?![а-яіїєґa-z])', caseSensitive: false).firstMatch(tLower);
     if (m != null) {
       final val = int.tryParse(m.group(1)!);
-      if (val != null) return val;
+      if (val != null && val >= 50 && val <= 10000) return val;
+      if (val != null && val > 10000) return null;
     }
     final matches = RegExp(r'\b(\d{3,4})\b').allMatches(text);
     for (final match in matches) {
       final val = int.tryParse(match.group(1)!);
-      if (val != null && val >= 300 && val <= 7500 && val % 10 == 0) {
+      if (val != null && val >= 300 && val <= 10000 && val % 10 == 0) {
         return val;
       }
     }
@@ -176,8 +178,8 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
         text.contains('!!!!') ||
         RegExp(r'^(?:УВАГА|ЦІЛЬ|ПУСК|ВИХОДИ|ШВИДКІСНА|БАЛІСТИКА)[!\s⚠️]*$').hasMatch(text.trim());
 
-    // Якщо вказано висоту типову для БпЛА (300..5000 м) — це гарантовано не балістика
-    final bool hasUavAltitude = (altitudeMeters != null && altitudeMeters >= 300 && altitudeMeters <= 5000);
+    // Якщо вказано висоту типову для БпЛА (300..10000 м) — це гарантовано не балістика
+    final bool hasUavAltitude = (altitudeMeters != null && altitudeMeters >= 300 && altitudeMeters <= 10000);
 
     if (tLower.contains('каб') || tLower.contains('кар ') || tLower.contains('керован') || tLower.contains('уфаб')) {
       return {'type': 'kab', 'speed': 850.0, 'label': 'КАБ / КАР'};
@@ -270,6 +272,7 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
       'відбій', 'зелений', 'безпек', 'дорозвідка', 'чисто', 'локаційно', 'втрачено',
       'не спостерігається', 'не фіксується', 'немає цілей', 'без фіксаці', 'фіксацій немає',
       'не фіксуються', 'чисте небо', 'попередньо чисто', 'все походу', 'та все, нема', 'нема вже',
+      'немає', 'нема', 'зникло', 'зник', 'чисто по',
     ];
     if (clear.any((kw) => tLower.contains(kw)) || dynamicClearKeywords.any((kw) => tLower.contains(kw))) return 'clear';
 
@@ -542,6 +545,7 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
           if (locName.contains('полтав')) searchStems.add('полтав');
           if (locName.contains('вінниц')) searchStems.add('вінниц');
           if (locName.contains('тетіїв')) searchStems.add('теті');
+          if (locName.contains('трахтемир')) searchStems.add('трахтемир');
 
           bool matchedAsOrigin = false;
           for (final stem in searchStems) {
