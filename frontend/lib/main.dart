@@ -253,8 +253,8 @@ final watchedLocationsProvider = NotifierProvider<WatchedLocationsNotifier, List
   return WatchedLocationsNotifier();
 });
 
-const int kCurrentVersionCode = 33;
-const String kCurrentVersionName = '1.2.30';
+const int kCurrentVersionCode = 34;
+const String kCurrentVersionName = '1.2.31';
 
 
 class RemoteConfigNotifier extends Notifier<RemoteConfig> {
@@ -419,7 +419,7 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
             'Pragma': 'no-cache',
             'Expires': '0',
           },
-        ).timeout(const Duration(seconds: 4));
+        ).timeout(const Duration(seconds: 7));
         // Захист від переповнення пам'яті (макс. 512 КБ)
         if (resp.statusCode != 200 || resp.bodyBytes.length > 524288) {
           return <Map<String, dynamic>>[];
@@ -672,7 +672,7 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
     final alerts = ref.read(alertsProvider);
     final bool isAlert = alerts['м. Київ'] == true || alerts['Київська область'] == true;
     final bool hasThreats = state.any((m) => m['type'] == 'danger');
-    final int nextIntervalSec = (isAlert || hasThreats) ? 4 : 10;
+    final int nextIntervalSec = (isAlert || hasThreats) ? 5 : 10;
     _timer = Timer(Duration(seconds: nextIntervalSec), _fetchData);
   }
   
@@ -2093,9 +2093,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                               // а) коротке повідомлення капсом РІВНО з одного або двох слів капсом без назв населених пунктів:
                               final trimmedText = rawMsgText.trim();
-                              final bool isShortCaps = RegExp(r'^(?:УВАГА|ЦІЛЬ|ПУСК|ВИХОДИ|ШВИДКІСНА|БАЛІСТИКА)[!\s⚠️]*$').hasMatch(trimmedText);
+                              final bool isShortCaps = RegExp(r'^(?:УВАГА|ЦІЛЬ|ПУСК|ВИХОДИ|ШВИДКІСНА|БАЛІСТИКА|СХОВАЛИСЬ|В УКРИТТЯ|УКРИТТЯ)[!\s⚠️]*$', caseSensitive: false).hasMatch(trimmedText);
 
-                              // б) повідомлення зі словами "баліст", "іскандер", "кинджал", "циркон", "с-300", "с-400", "х-101", "х-22", "х-32", "х-59", "х-69", "калібр", "онікс", "ракет", "швидкісна", "швидкісні", "виходи", "багато цілей", "цілей йде", "цілі йдуть"
+                              // б) повідомлення зі словами "баліст", "іскандер", "кинджал", "циркон", "с-300", "с-400", "х-101", "х-22", "х-32", "х-59", "х-69", "калібр", "онікс", "ракет", "швидкісна", "швидкісні", "виходи", "багато цілей", "цілей йде", "цілі йдуть", "сховались", "в укриття", "брянськ"
                               final bool isExplicitBallisticWord = msgTextLower.contains('баліст') ||
                                   msgTextLower.contains('іскандер') ||
                                   msgTextLower.contains('кинджал') ||
@@ -2115,7 +2115,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   msgTextLower.contains('виходи') ||
                                   msgTextLower.contains('багато цілей') ||
                                   msgTextLower.contains('цілей йде') ||
-                                  msgTextLower.contains('цілі йдуть');
+                                  msgTextLower.contains('цілі йдуть') ||
+                                  msgTextLower.contains('сховались') ||
+                                  msgTextLower.contains('в укриття') ||
+                                  (msgTextLower.contains('брянськ') && msgTextLower.contains('баліст')) ||
+                                  (msgTextLower.contains('курськ') && msgTextLower.contains('баліст'));
 
                               // в) наявність 4 знаків оклику поспіль '!!!!'
                               final bool hasFourExclamations = rawMsgText.contains('!!!!');
@@ -2127,7 +2131,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                 missileContextTime = msgTime;
                               }
 
-                              if (missileContextTime != null && msgTime.difference(missileContextTime).inMinutes.abs() > 4) {
+                              if (missileContextTime != null && msgTime.difference(missileContextTime).inMinutes.abs() > 6) {
                                 activeBallisticOrMissileContext = false;
                               }
 
@@ -2344,25 +2348,27 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   _dynamicClearKeywords.any((k) => msgTextLower.contains(k)));
 
                               if (isClearMsg) {
-                                bool onlyClearUavs = (msgTextLower.contains('бпла') || msgTextLower.contains('шахед') || msgTextLower.contains('мопед') || msgTextLower.contains('дрон')) && !msgTextLower.contains('загроза бпла') && !msgTextLower.contains('загроза шахед');
-                                bool onlyClearMissiles = (msgTextLower.contains('балістик') || msgTextLower.contains('ракет') || msgTextLower.contains('кинджал')) && !msgTextLower.contains('загроза баліст') && !msgTextLower.contains('загроза ракет');
-                                
-                                if (onlyClearMissiles || (!onlyClearUavs && !onlyClearMissiles)) {
-                                  activeBallisticOrMissileContext = false;
-                                  missileContextTime = null;
-                                }
-                                if (onlyClearUavs || (!onlyClearUavs && !onlyClearMissiles)) {
-                                  activeJetDroneContext = false;
-                                  jetContextTime = null;
-                                }
-                                
                                 final bool isFullOblastClear = (msgTextLower.contains('відбій') && !msgTextLower.contains('по ракетах')) ||
                                     msgTextLower.contains('область чисто') ||
                                     msgTextLower.contains('чисто по області') ||
                                     msgTextLower.contains('в області чисто') ||
                                     msgTextLower.contains('по області відбій') ||
                                     msgTextLower.contains('по області чисто') ||
+                                    msgTextLower.contains('ракети чисто') ||
+                                    msgTextLower.contains('балістика чисто') ||
+                                    msgTextLower.contains('дорозвідка по балістиці') ||
                                     msgTextLower.contains('чисте небо');
+                                final bool onlyClearMissiles = (msgTextLower.contains('балістик') || msgTextLower.contains('ракет') || msgTextLower.contains('кинджал')) && !msgTextLower.contains('загроза баліст') && !msgTextLower.contains('загроза ракет');
+                                
+                                if (onlyClearMissiles || isFullOblastClear) {
+                                  activeBallisticOrMissileContext = false;
+                                  missileContextTime = null;
+                                }
+                                final bool onlyClearUavs = msgTextLower.contains('бпла') || msgTextLower.contains('шахед') || msgTextLower.contains('мопед') || msgTextLower.contains('дрон');
+                                if (onlyClearUavs || isFullOblastClear) {
+                                  activeJetDroneContext = false;
+                                  jetContextTime = null;
+                                }
 
                                 final bool isKyivCityClear = msgTextLower.contains('київ') &&
                                     !msgTextLower.contains('київщин') &&
@@ -3455,8 +3461,18 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     txt.contains('та все, нема') ||
                                     txt.contains('нема вже');
 
-                                // Якщо ми знайшли повідомлення про відбій / зняття цілі раніше, ніж знайшли саме повідомлення про загрозу, значить загроза вже скасована!
-                                if (isClearMsg && (txt.contains('баліст') || txt.contains('ракет') || txt.contains('міг') || txt.contains('кинджал') || !txt.contains('бпла'))) {
+                                // Якщо ми знайшли повідомлення про явний відбій ракет / балістики, загроза скасована!
+                                final bool isExplicitMissileClear = isClearMsg && (
+                                  txt.contains('по баліст') ||
+                                  txt.contains('по ракет') ||
+                                  txt.contains('по кинджал') ||
+                                  txt.contains('ракети чисто') ||
+                                  txt.contains('балістика чисто') ||
+                                  txt.contains('дорозвідка по балістиці') ||
+                                  txt.contains('дорозвідка по ракетах') ||
+                                  (txt.contains('відбій') && !txt.contains('бпла') && !txt.contains('шахед'))
+                                );
+                                if (isExplicitMissileClear) {
                                   break;
                                 }
 
@@ -3473,7 +3489,20 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   }
                                 }
 
-                                if (diffMins <= 10 && (txt.contains('баліст') || txt.contains('циркон') || txt.contains('іскандер') || txt.contains('х-101') || txt.contains('онікс') || txt.contains('крилат') || txt.contains('ракет'))) {
+                                final bool isBallisticText = txt.contains('баліст') ||
+                                    txt.contains('циркон') ||
+                                    txt.contains('іскандер') ||
+                                    txt.contains('х-101') ||
+                                    txt.contains('онікс') ||
+                                    txt.contains('крилат') ||
+                                    txt.contains('ракет') ||
+                                    txt.contains('сховались') ||
+                                    txt.contains('в укриття') ||
+                                    (txt.contains('брянськ') && txt.contains('баліст')) ||
+                                    (txt.contains('курськ') && txt.contains('баліст')) ||
+                                    RegExp(r'^(?:увага|ціль|пуск|виходи|швидкісна|балістика|сховались|в укриття)[!\s⚠️]*$', caseSensitive: false).hasMatch(txt.trim());
+
+                                if (diffMins <= 12 && isBallisticText) {
                                   hasMissiles = true;
                                   break;
                                 }

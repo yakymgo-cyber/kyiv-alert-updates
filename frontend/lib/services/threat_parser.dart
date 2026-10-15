@@ -194,15 +194,21 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
         tLower.contains('дрон') ||
         tLower.contains('геран');
 
-    // Балістичний тригер: ТІЛЬКИ явні ракетні маркери, '!!!!' або суто ізольоване одне-два слова капсом ('УВАГА', 'ЦІЛЬ', 'ПУСК', 'ВИХОДИ', 'ШВИДКІСНА', 'БАЛІСТИКА') без населених пунктів
+    // Балістичний тригер: ТІЛЬКИ явні ракетні маркери, '!!!!' або суто ізольоване одне-два слова капсом ('УВАГА', 'ЦІЛЬ', 'ПУСК', 'ВИХОДИ', 'ШВИДКІСНА', 'БАЛІСТИКА', 'СХОВАЛИСЬ', 'В УКРИТТЯ', 'УКРИТТЯ') без населених пунктів
     final bool hasBallisticMarker = tLower.contains('швидкісна') ||
         tLower.contains('швидкісні') ||
         tLower.contains('виходи') ||
         tLower.contains('багато цілей') ||
         tLower.contains('цілей йде') ||
         tLower.contains('цілі йдуть') ||
+        tLower.contains('сховались') ||
+        tLower.contains('в укриття') ||
+        tLower.contains('укриття') ||
+        (tLower.contains('брянськ') && tLower.contains('баліст')) ||
+        (tLower.contains('курськ') && tLower.contains('баліст')) ||
+        (tLower.contains('воронеж') && tLower.contains('баліст')) ||
         text.contains('!!!!') ||
-        RegExp(r'^(?:УВАГА|ЦІЛЬ|ПУСК|ВИХОДИ|ШВИДКІСНА|БАЛІСТИКА)[!\s⚠️]*$').hasMatch(text.trim());
+        RegExp(r'^(?:УВАГА|ЦІЛЬ|ПУСК|ВИХОДИ|ШВИДКІСНА|БАЛІСТИКА|СХОВАЛИСЬ|В УКРИТТЯ|УКРИТТЯ)[!\s⚠️]*$', caseSensitive: false).hasMatch(text.trim());
 
     // Якщо вказано висоту типову для БпЛА (300..10000 м) — це гарантовано не балістика
     final bool hasUavAltitude = (altitudeMeters != null && altitudeMeters >= 300 && altitudeMeters <= 10000);
@@ -347,6 +353,7 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
       'багато цілей', 'цілей йде', 'цілі йдуть', 'група цілей', 'увага !!', 'увага!!',
       'літає', 'кружляє', 'крутить', 'фіксується', 'водосховищ', 'вишгород', 'тетіїв', 'вилізло', 'виліз',
       'в\'єтнам', 'вєтнам', 'не мінус', 'не зник', 'не збито',
+      'сховались', 'в укриття', 'брянськ',
     ];
     if (danger.any((kw) => tLower.contains(kw)) ||
         dynamicDangerKeywords.any((kw) => tLower.contains(kw)) ||

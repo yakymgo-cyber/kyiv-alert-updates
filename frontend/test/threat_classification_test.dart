@@ -808,6 +808,24 @@ void main() {
       final filtered = ThreatParser.filterOperationalMessages([]);
       expect(filtered, isEmpty);
     });
+
+    test('Emergency warnings "СХОВАЛИСЬ", "ЦІЛЬ", "❗️ Брянськ балістика" are classified as missile_ballistic and categorized as danger', () {
+      final tBryansk = ThreatParser.analyzeLocalThreat('❗️  Брянськ балістика');
+      expect(tBryansk['type'], equals('missile_ballistic'));
+      expect(ThreatParser.categorizeLocalMessage('❗️  Брянськ балістика'), equals('danger'));
+
+      final tSkhov = ThreatParser.analyzeLocalThreat('СХОВАЛИСЬ');
+      expect(tSkhov['type'], equals('missile_ballistic'));
+      expect(ThreatParser.categorizeLocalMessage('СХОВАЛИСЬ'), equals('danger'));
+
+      final tTsil = ThreatParser.analyzeLocalThreat('ЦІЛЬ');
+      expect(tTsil['type'], equals('missile_ballistic'));
+      expect(ThreatParser.categorizeLocalMessage('ЦІЛЬ'), equals('danger'));
+
+      final tUkryttya = ThreatParser.analyzeLocalThreat('В УКРИТТЯ');
+      expect(tUkryttya['type'], equals('missile_ballistic'));
+      expect(ThreatParser.categorizeLocalMessage('В УКРИТТЯ'), equals('danger'));
+    });
   });
 }
 
