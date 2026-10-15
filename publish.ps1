@@ -1,4 +1,4 @@
-﻿param (
+param (
     [string]$Changelog = "Оновлення радара та бази локацій"
 )
 
@@ -128,11 +128,8 @@ Write-Host "Оновлено remote_config.json (v$newName, Build $newCode)" -Fo
 
 # 5. Git коміт та пуш
 Write-Host "`nФіксація змін у Git..." -ForegroundColor Yellow
-$gitUser = & git config user.name
-if (-not $gitUser) {
-    & git config user.name "yakymgo-cyber"
-    & git config user.email "yakym.g.o@gmail.com"
-}
+& git config user.name "yakymgo-cyber"
+& git config user.email "342408090+yakymgo-cyber@users.noreply.github.com"
 & git add .
 & git commit -m "Release v${newName}: $Changelog"
 try {
