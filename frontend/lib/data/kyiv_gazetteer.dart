@@ -252,7 +252,10 @@ const kKyivRegionLocations = <String, (double, double, String)>{
   'водосховище': (50.7600, 30.5000, 'Київське водосховище'),
   'водосховищі': (50.7600, 30.5000, 'Київське водосховище'),
   'водосховища': (50.7600, 30.5000, 'Київське водосховище'),
+  'водосховищ': (50.7600, 30.5000, 'Київське водосховище'),
   'київське море': (50.7600, 30.5000, 'Київське водосховище'),
+  'київського моря': (50.7600, 30.5000, 'Київське водосховище'),
+  'київському морі': (50.7600, 30.5000, 'Київське водосховище'),
   'моря': (50.7600, 30.5000, 'Київське водосховище'),
   'море': (50.7600, 30.5000, 'Київське водосховище'),
   'хотянівк': (50.612, 30.562, 'Хотянівка'),
@@ -660,7 +663,9 @@ Future<void> _loadLearnedLocations() async {
           if (lat != null && lon != null) {
             if (lat >= 49.1 && lat <= 51.6 && lon >= 29.2 && lon <= 32.2) {
               _learnedLocations[keyStr] = (lat, lon, safeName);
-              kKyivLocations[keyStr] = (lat, lon, safeName);
+              if (!kKyivRegionLocations.containsKey(keyStr)) {
+                kKyivLocations[keyStr] = (lat, lon, safeName);
+              }
               count++;
             }
           }
@@ -709,7 +714,9 @@ Future<void> _autoGeocodeLocation(String rawWord, String stem) async {
             final cleanName = rawDisplay.replaceAll(RegExp(r'<[^>]*>'), '').replaceAll(RegExp(r'[\r\n\t]'), ' ').trim();
             final safeName = cleanName.length > 40 ? cleanName.substring(0, 40) : cleanName;
             _learnedLocations[stem] = (lat, lon, safeName);
-            kKyivLocations[stem] = (lat, lon, safeName);
+            if (!kKyivRegionLocations.containsKey(stem)) {
+              kKyivLocations[stem] = (lat, lon, safeName);
+            }
             await _saveLearnedLocations();
             onNewLocationLearned?.call();
           }

@@ -253,8 +253,8 @@ final watchedLocationsProvider = NotifierProvider<WatchedLocationsNotifier, List
   return WatchedLocationsNotifier();
 });
 
-const int kCurrentVersionCode = 25;
-const String kCurrentVersionName = '1.2.22';
+const int kCurrentVersionCode = 26;
+const String kCurrentVersionName = '1.2.23';
 
 
 class RemoteConfigNotifier extends Notifier<RemoteConfig> {
@@ -292,7 +292,7 @@ class RemoteConfigNotifier extends Notifier<RemoteConfig> {
         if (state.versionCode <= cfg.versionCode) {
           state = cfg;
           await _loadLearnedLocations();
-          _kKyivLocations = {..._kBaseKyivLocations, ...cfg.extraLocations, ..._learnedLocations};
+          _kKyivLocations = {..._learnedLocations, ..._kBaseKyivLocations, ...cfg.extraLocations};
           _dynamicExtraChannels = cfg.extraChannels;
           _dynamicDangerKeywords = cfg.extraDangerKeywords;
           _dynamicClearKeywords = cfg.extraClearKeywords;
@@ -344,7 +344,7 @@ class RemoteConfigNotifier extends Notifier<RemoteConfig> {
           final jsonMap = json.decode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
           final cfg = RemoteConfig.fromJson(jsonMap);
           state = cfg;
-          _kKyivLocations = {..._kBaseKyivLocations, ...cfg.extraLocations, ..._learnedLocations};
+          _kKyivLocations = {..._learnedLocations, ..._kBaseKyivLocations, ...cfg.extraLocations};
           _dynamicExtraChannels = cfg.extraChannels;
           _dynamicDangerKeywords = cfg.extraDangerKeywords;
           _dynamicClearKeywords = cfg.extraClearKeywords;
@@ -1975,8 +1975,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                           }
 
                           List<Map<String, dynamic>> threats = [];
-                          // Жодні шахеди не можуть літати, якщо офіційно відбій (немає тривоги)
-                          if (anyAlert && messages.isNotEmpty) {
+                          final bool hasRecentDangerMsg = messages.take(25).any((m) {
+                            if (m['type'] != 'danger' || m['date'] == null) return false;
+                            final dt = DateTime.tryParse(m['date'].toString())?.toUtc();
+                            return dt != null && now.difference(dt).inMinutes.abs() <= 20;
+                          });
+                          if ((anyAlert || hasRecentDangerMsg) && messages.isNotEmpty) {
                             final recentMsgs = messages.take(120).where((msg) {
                               if (msg['date'] == null) return true;
                               try {
@@ -1992,6 +1996,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             DateTime? missileContextTime;
                             bool activeJetDroneContext = false;
                             DateTime? jetContextTime;
+                            final List<({LatLng point, DateTime time, String? channel})> recentlyClearedLocations = [];
+                            String? normPost(dynamic p) {
+                              if (p == null) return null;
+                              final s = p.toString().toLowerCase().split('?').first.trim();
+                              return s.isEmpty ? null : s;
+                            }
 
                             for (var msg in recentMsgs) {
                               DateTime msgTime = now;
@@ -2112,6 +2122,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   final lastTarget = threats.last;
                                   lastTarget['isDestroyed'] = true;
                                   lastTarget['destroyedAt'] = msgTime;
+                                  final p = (lastTarget['path'] as List<LatLng>?) ?? [];
+                                  if (p.isNotEmpty) {
+                                    recentlyClearedLocations.add((point: p.last, time: msgTime, channel: msg['channel']?.toString()));
+                                  }
                                 }
                                 if (!hasDangerAlso) continue;
                               }
@@ -2171,13 +2185,21 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     if (onlyClearUavs && !onlyClearMissiles && (t['type'] == 'missile_ballistic' || t['type'] == 'missile_cruise' || t['type'] == 'missile_hypersonic' || t['type'] == 'missile_supersonic' || t['type'] == 'kab')) return false;
                                     if (onlyClearMissiles && !onlyClearUavs && !t['type'].toString().contains('missile')) return false;
                                     final p = (t['path'] as List<LatLng>).last;
-                                    return const Distance().as(LengthUnit.Meter, kyivCenter, p) <= 18000;
+                                    final shouldRemove = const Distance().as(LengthUnit.Meter, kyivCenter, p) <= 18000;
+                                    if (shouldRemove) {
+                                      recentlyClearedLocations.add((point: p, time: msgTime, channel: msg['channel']?.toString()));
+                                    }
+                                    return shouldRemove;
                                   });
                                 } else if (isFullOblastClear) {
                                   // Повний офіційний відбій або чисто по всій області — очищуємо всі цілі області
                                   threats.removeWhere((t) {
                                     if (onlyClearUavs && !onlyClearMissiles && (t['type'] == 'missile_ballistic' || t['type'] == 'missile_cruise' || t['type'] == 'missile_hypersonic' || t['type'] == 'missile_supersonic' || t['type'] == 'kab')) return false;
                                     if (onlyClearMissiles && !onlyClearUavs && !t['type'].toString().contains('missile')) return false;
+                                    final p = (t['path'] as List<LatLng>?)?.last;
+                                    if (p != null) {
+                                      recentlyClearedLocations.add((point: p, time: msgTime, channel: msg['channel']?.toString()));
+                                    }
                                     return true;
                                   });
                                 } else {
@@ -2193,10 +2215,14 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     threats.removeWhere((t) {
                                       final path = t['path'] as List<LatLng>;
                                       if (path.isEmpty) return false;
-                                      return specificLocs.any((loc) {
+                                      final shouldRemove = specificLocs.any((loc) {
                                         final locPt = LatLng(loc.value.$1, loc.value.$2);
                                         return const Distance().as(LengthUnit.Meter, locPt, path.last) <= 14000;
                                       });
+                                      if (shouldRemove) {
+                                        recentlyClearedLocations.add((point: path.last, time: msgTime, channel: msg['channel']?.toString()));
+                                      }
+                                      return shouldRemove;
                                     });
                                   } else {
                                     // Без вказання конкретного району (наприклад "Немає", "Зникло", "Локаційно чисто", "Знив") —
@@ -2204,21 +2230,26 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     if (threats.isNotEmpty) {
                                       int targetIdx = -1;
                                       final msgChannel = msg['channel']?.toString();
-                                      final replyToPostId = msg['reply_to_post_id']?.toString() ?? msg['replyToPostId']?.toString();
-                                      final replyToId = msg['reply_to_msg_id'];
+                                      final replyToPostId = normPost(msg['reply_to_post_id'] ?? msg['replyToPostId']);
+                                      final replyToId = msg['reply_to_msg_id'] ?? msg['replyToId'];
+                                      final mergedMsgIds = (msg['merged_msg_ids'] as List?)?.cast<dynamic>() ?? [];
+                                      final mergedPostIds = (msg['merged_post_ids'] as List?)?.map((p) => normPost(p)).whereType<String>().toList() ?? [];
 
                                       // 1. Пріоритет: точний reply на повідомлення треку (через replyToPostId або replyToId)
                                       if (replyToPostId != null || replyToId != null) {
                                         for (int ti = threats.length - 1; ti >= 0; ti--) {
                                           final candidate = threats[ti];
-                                          final lastPostId = candidate['lastPostId'];
+                                          final lastPostId = normPost(candidate['lastPostId']);
                                           final histPosts = candidate['historyPostIds'] as Set<dynamic>?;
+                                          final normHistPosts = histPosts?.map((p) => normPost(p)).whereType<String>().toSet();
                                           final history = candidate['historyMsgIds'] as Set<dynamic>?;
 
                                           final bool matchPost = replyToPostId != null &&
-                                              (lastPostId == replyToPostId || (histPosts != null && histPosts.contains(replyToPostId)));
+                                              (lastPostId == replyToPostId ||
+                                               (normHistPosts != null && (normHistPosts.contains(replyToPostId) || mergedPostIds.any((mp) => normHistPosts.contains(mp)))));
                                           final bool matchMsgId = replyToId != null &&
-                                              (candidate['msgId'] == replyToId || (history != null && history.contains(replyToId)));
+                                              (candidate['msgId'] == replyToId ||
+                                               (history != null && (history.contains(replyToId) || mergedMsgIds.any((mid) => history.contains(mid)))));
 
                                           if (matchPost || matchMsgId) {
                                             targetIdx = ti;
@@ -2251,7 +2282,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       }
 
                                       if (targetIdx != -1) {
-                                        threats.removeAt(targetIdx);
+                                        final cleared = threats.removeAt(targetIdx);
+                                        final p = (cleared['path'] as List<LatLng>?) ?? [];
+                                        if (p.isNotEmpty) {
+                                          recentlyClearedLocations.add((point: p.last, time: msgTime, channel: msg['channel']?.toString()));
+                                        }
                                       }
                                     }
                                   }
@@ -2322,21 +2357,6 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         }
 
                                         final pt = LatLng(lat, lon);
-                                        final distFromKyiv = const Distance().as(LengthUnit.Meter, kyivCenter, pt);
-                                        final bool isInsideKyivCity = distFromKyiv <= 18000;
-                                        
-                                        String rawTypeTemp = (t['type'] ?? 'shahed').toString();
-                                        bool isMissile = rawTypeTemp.contains('missile') || rawTypeTemp.contains('ballistic') || rawTypeTemp.contains('hypersonic') || rawTypeTemp.contains('cruise') || rawTypeTemp.contains('supersonic') || rawTypeTemp == 'kab';
-
-                                        // Якщо в м. Київ ВІДБІЙ (немає тривоги) — БПЛА по Києву літати не можуть! (але ракети не фільтруємо, бо тривога може запізнюватись)
-                                        if (!isMissile && isInsideKyivCity && !kyivCityAlert) {
-                                          continue;
-                                        }
-                                        // Якщо в Київській області ВІДБІЙ (немає тривоги) — БПЛА по області літати не можуть!
-                                        if (!isMissile && !isInsideKyivCity && !kyivOblastAlert) {
-                                          continue;
-                                        }
-
                                         path.add(pt);
                                         if (locName.isNotEmpty) {
                                           locNames.add(locName);
@@ -2348,6 +2368,31 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   }
 
                                   if (path.isEmpty) continue;
+
+                                  final bool hasMultiTargetWords = msgTextLower.contains('ще один') ||
+                                      msgTextLower.contains('новий') ||
+                                      msgTextLower.contains('нова') ||
+                                      msgTextLower.contains('другий') ||
+                                      msgTextLower.contains('ще 1') ||
+                                      msgTextLower.contains('ще 2');
+
+                                  if (path.length == 1 && !hasMultiTargetWords) {
+                                    final singlePt = path.first;
+                                    bool isResurrected = false;
+                                    for (final clr in recentlyClearedLocations) {
+                                      final secDiff = msgTime.difference(clr.time).inSeconds.abs();
+                                      if (secDiff <= 90) {
+                                        final dMeters = const Distance().as(LengthUnit.Meter, clr.point, singlePt);
+                                        if (dMeters <= 5000.0) {
+                                          isResurrected = true;
+                                          break;
+                                        }
+                                      }
+                                    }
+                                    if (isResurrected) {
+                                      continue; // Ігноруємо запізніле повідомлення, щоб не воскрешати щойно зниклу ціль
+                                    }
+                                  }
 
                                   // Розумне розведення рою (Swarm Lateral Offset):
                                   if (msgThreats.length > 1 && threatIdx > 0) {
@@ -2432,10 +2477,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       rawType.contains('supersonic') ||
                                       rawType == 'kab';
 
-                                  final msgPostId = msg['postId']?.toString() ?? msg['post_id']?.toString();
-                                  final replyToPostId = msg['reply_to_post_id']?.toString() ?? msg['replyToPostId']?.toString();
+                                  final msgPostId = normPost(msg['postId'] ?? msg['post_id']);
+                                  final replyToPostId = normPost(msg['reply_to_post_id'] ?? msg['replyToPostId']);
                                   final replyQuotedText = msg['reply_quoted_text']?.toString() ?? msg['replyQuotedText']?.toString();
                                   final replyToId = msg['reply_to_msg_id'] ?? msg['replyToId'];
+                                  final mergedMsgIds = (msg['merged_msg_ids'] as List?)?.cast<dynamic>() ?? [];
+                                  final mergedPostIds = (msg['merged_post_ids'] as List?)?.map((p) => normPost(p)).whereType<String>().toList() ?? [];
 
                                   bool mergedIntoExisting = false;
 
@@ -2443,15 +2490,18 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   final bool hasExplicitReply = replyToPostId != null || replyToId != null;
                                   if (hasExplicitReply && threats.isNotEmpty) {
                                     for (var existing in threats) {
-                                      final lastPostId = existing['lastPostId']?.toString();
+                                      final lastPostId = normPost(existing['lastPostId']);
                                       final histPosts = existing['historyPostIds'] as Set<dynamic>?;
+                                      final normHistPosts = histPosts?.map((p) => normPost(p)).whereType<String>().toSet();
                                       final histMsgIds = existing['historyMsgIds'] as Set<dynamic>?;
                                       final existingMsgId = existing['msgId'];
 
                                       final bool matchPost = replyToPostId != null &&
-                                          (lastPostId == replyToPostId || (histPosts != null && histPosts.contains(replyToPostId)));
+                                          (lastPostId == replyToPostId ||
+                                           (normHistPosts != null && (normHistPosts.contains(replyToPostId) || mergedPostIds.any((mp) => normHistPosts.contains(mp)))));
                                       final bool matchId = replyToId != null &&
-                                          (existingMsgId == replyToId || (histMsgIds != null && histMsgIds.contains(replyToId)));
+                                          (existingMsgId == replyToId ||
+                                           (histMsgIds != null && (histMsgIds.contains(replyToId) || mergedMsgIds.any((mid) => histMsgIds.contains(mid)))));
 
                                       if (matchPost || matchId) {
                                         final existingWaypoints = (existing['waypoints'] as List<LatLng>?) ??
@@ -2484,14 +2534,19 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                                         existing['lastUpdated'] = msgTime;
                                         existing['lastPostId'] = msgPostId;
-                                        if (msgPostId != null) {
-                                          final histPostsSet = (existing['historyPostIds'] as Set<dynamic>? ?? <dynamic>{});
-                                          histPostsSet.add(msgPostId);
-                                          existing['historyPostIds'] = histPostsSet;
+                                        final histPostsSet = (existing['historyPostIds'] as Set<dynamic>? ?? <dynamic>{});
+                                        if (msgPostId != null) histPostsSet.add(msgPostId);
+                                        for (final mp in mergedPostIds) {
+                                          histPostsSet.add(mp);
                                         }
+                                        existing['historyPostIds'] = histPostsSet;
+
                                         existing['msgId'] = msg['id'];
                                         final histMsgs = (existing['historyMsgIds'] as Set<dynamic>? ?? <dynamic>{});
-                                        histMsgs.add(msg['id']);
+                                        if (msg['id'] != null) histMsgs.add(msg['id']);
+                                        for (final mid in mergedMsgIds) {
+                                          histMsgs.add(mid);
+                                        }
                                         existing['historyMsgIds'] = histMsgs;
                                         existing['channel'] = msg['channel'];
                                         existing['text'] = msgTextLower;
@@ -2665,7 +2720,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           final lastPt = existingPath.last;
                                           final prevPt = existingPath[existingPath.length - 2];
                                           final double extraDistM = math.min(existingSpeedMs * extraElapsedSec, 15000.0);
-                                          final double bearingRad = _calculateBearing(prevPt, lastPt) * math.pi / 180.0;
+                                          final double bearingRad = _calculateBearing(prevPt, lastPt);
                                           const double earthRadius = 6378137.0;
                                           final double d = extraDistM / earthRadius;
                                           final double lat1 = lastPt.latitude * math.pi / 180.0;
@@ -2678,6 +2733,13 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         }
 
                                         final double distFromExtrapolatedMeters = const Distance().as(LengthUnit.Meter, currentExtrapolatedPos, path.first);
+
+                                        if (path.length >= 2) {
+                                          final double distFromCurrentPos = const Distance().as(LengthUnit.Meter, currentExtrapolatedPos, path.first);
+                                          if (distFromCurrentPos > 7000.0) {
+                                            continue; // Окремий вектор >= 2 точок за межами 7 км не склеюємо!
+                                          }
+                                        }
 
                                         // а) Крос-канальна дедуплікація
                                         final existingChannel = existing['channel']?.toString();
@@ -2725,11 +2787,14 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                                         final double timeDiffHours = timeDiffSeconds / 3600.0;
                                         final double effSpeed = isAnyMissile ? math.max(speed, 5000.0) : (isJetThreat ? math.max(speed, 480.0) : speed);
-                                        final double maxAllowedKm = isAnyMissile
+                                        double maxAllowedKm = isAnyMissile
                                             ? (effSpeed * timeDiffHours * 1.2).clamp(10.0, 90.0)
                                             : (isJetThreat
                                                 ? (effSpeed * timeDiffHours * 1.6).clamp(10.0, 65.0)
                                                 : (effSpeed * timeDiffHours * 1.4).clamp(4.0, 22.0));
+                                        if (!isAnyMissile && !isJetThreat && path.length == 1 && timeDiffSeconds <= 120.0) {
+                                          maxAllowedKm = math.min(maxAllowedKm, 6.5);
+                                        }
                                         if (distFromExtrapolatedMeters > maxAllowedKm * 1000.0) {
                                           continue;
                                         }
@@ -2851,21 +2916,36 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     msgTextLower.contains('низько');
 
                                 if (alt != null || isDescKeyword) {
-                                  if (alt != null) {
-                                    activeBallisticOrMissileContext = false;
-                                  }
-                                  final replyToId = msg['reply_to_msg_id'];
-                                  Map<String, dynamic>? targetThreat;
-                                  if (replyToId != null) {
-                                    for (int ti = threats.length - 1; ti >= 0; ti--) {
-                                      final candidate = threats[ti];
-                                      final history = candidate['historyMsgIds'] as Set<dynamic>?;
-                                      if (candidate['msgId'] == replyToId || (history != null && history.contains(replyToId))) {
-                                        targetThreat = candidate;
-                                        break;
+                                    if (alt != null) {
+                                      activeBallisticOrMissileContext = false;
+                                    }
+                                    final replyToId = msg['reply_to_msg_id'] ?? msg['replyToId'];
+                                    final replyToPostId = normPost(msg['reply_to_post_id'] ?? msg['replyToPostId']);
+                                    final mergedMsgIds = (msg['merged_msg_ids'] as List?)?.cast<dynamic>() ?? [];
+                                    final mergedPostIds = (msg['merged_post_ids'] as List?)?.map((p) => normPost(p)).whereType<String>().toList() ?? [];
+
+                                    Map<String, dynamic>? targetThreat;
+                                    if (replyToPostId != null || replyToId != null) {
+                                      for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                        final candidate = threats[ti];
+                                        final lastPostId = normPost(candidate['lastPostId']);
+                                        final histPosts = candidate['historyPostIds'] as Set<dynamic>?;
+                                        final normHistPosts = histPosts?.map((p) => normPost(p)).whereType<String>().toSet();
+                                        final history = candidate['historyMsgIds'] as Set<dynamic>?;
+
+                                        final bool matchPost = replyToPostId != null &&
+                                            (lastPostId == replyToPostId ||
+                                             (normHistPosts != null && (normHistPosts.contains(replyToPostId) || mergedPostIds.any((mp) => normHistPosts.contains(mp)))));
+                                        final bool matchId = replyToId != null &&
+                                            (candidate['msgId'] == replyToId ||
+                                             (history != null && (history.contains(replyToId) || mergedMsgIds.any((mid) => history.contains(mid)))));
+
+                                        if (matchPost || matchId) {
+                                          targetThreat = candidate;
+                                          break;
+                                        }
                                       }
                                     }
-                                  }
 
                                   final msgChannel = msg['channel'];
                                   if (targetThreat == null) {
@@ -2923,9 +3003,28 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       targetThreat['isDescending'] = true;
                                     }
                                     targetThreat['lastUpdated'] = msgTime;
+                                      final msgPostId = normPost(msg['postId'] ?? msg['post_id']);
+                                      if (msgPostId != null) {
+                                        targetThreat['lastPostId'] = msgPostId;
+                                        final histPostsSet = (targetThreat['historyPostIds'] as Set<dynamic>? ?? <dynamic>{});
+                                        histPostsSet.add(msgPostId);
+                                        for (final mp in mergedPostIds) {
+                                          histPostsSet.add(mp);
+                                        }
+                                        targetThreat['historyPostIds'] = histPostsSet;
+                                      }
+                                      if (msg['id'] != null) {
+                                        targetThreat['msgId'] = msg['id'];
+                                        final histMsgs = (targetThreat['historyMsgIds'] as Set<dynamic>? ?? <dynamic>{});
+                                        histMsgs.add(msg['id']);
+                                        for (final mid in mergedMsgIds) {
+                                          histMsgs.add(mid);
+                                        }
+                                        targetThreat['historyMsgIds'] = histMsgs;
+                                      }
+                                    }
                                   }
                                 }
-                              }
                             }
 
                             // Залишаємо активні цілі за Smart TTL (балістика 120с, КР 180с, БпЛА 300с, вихід з області 45с) та щойно збиті цілі (25с)
@@ -3001,14 +3100,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                                 if (shouldBuildVector && (dLat != 0.0 || dLon != 0.0)) {
                                   final startPt = LatLng(targetPt.latitude + dLat, targetPt.longitude + dLon);
-                                  if (isMissile) {
-                                    path.insert(0, startPt);
-                                  } else {
-                                    final bool startInKyiv = const Distance().as(LengthUnit.Meter, kyivCenter, startPt) <= 18000;
-                                    if ((startInKyiv && kyivCityAlert) || (!startInKyiv && kyivOblastAlert)) {
-                                      path.insert(0, startPt);
-                                    }
-                                  }
+                                  path.insert(0, startPt);
+                                  t['waypoints'] = List<LatLng>.from(path);
                                 }
                               }
                             }

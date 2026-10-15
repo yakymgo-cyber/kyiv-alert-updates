@@ -167,5 +167,97 @@ void main() {
       expect((t4.first['path'] as List).first['lat'], closeTo(49.5200, 0.01));
     });
   });
+
+  group('Problem 5: Telegram Replies, Geo-Deduplication with Merged IDs, Circling & Inversion Tests', () {
+    test('New inflected forms of Kyiv reservoir and sea are in kKyivLocations', () {
+      expect(kKyivLocations.containsKey('водосховищ'), isTrue);
+      expect(kKyivLocations['водосховищ']!.$1, closeTo(50.7600, 0.001));
+      expect(kKyivLocations.containsKey('київського моря'), isTrue);
+      expect(kKyivLocations['київського моря']!.$1, closeTo(50.7600, 0.001));
+      expect(kKyivLocations.containsKey('київському морі'), isTrue);
+      expect(kKyivLocations['київському морі']!.$1, closeTo(50.7600, 0.001));
+    });
+
+    test('Categorizes danger words correctly', () {
+      expect(ThreatParser.categorizeLocalMessage('літає над лісом'), equals('danger'));
+      expect(ThreatParser.categorizeLocalMessage('кружляє'), equals('danger'));
+      expect(ThreatParser.categorizeLocalMessage('крутить коло'), equals('danger'));
+      expect(ThreatParser.categorizeLocalMessage('фіксується ціль'), equals('danger'));
+      expect(ThreatParser.categorizeLocalMessage('водосховище небезпека'), equals('danger'));
+      expect(ThreatParser.categorizeLocalMessage('вишгород увага'), equals('danger'));
+      expect(ThreatParser.categorizeLocalMessage('тетіїв дрон'), equals('danger'));
+      expect(ThreatParser.categorizeLocalMessage('вилізло на трою'), equals('danger'));
+      expect(ThreatParser.categorizeLocalMessage('виліз шахед'), equals('danger'));
+    });
+
+    test('Single location with circling words sets isCircling: true', () {
+      final t1 = ThreatParser.parseLocalThreats('В районі Вишгорода літає');
+      expect(t1.isNotEmpty, isTrue);
+      expect(t1.first['isCircling'], isTrue);
+
+      final t2 = ThreatParser.parseLocalThreats('Шахед кружляє біля Тетієва');
+      expect(t2.isNotEmpty, isTrue);
+      expect(t2.first['isCircling'], isTrue);
+    });
+
+    test('Contextual Novosilky resolves to Vyshhorod when northern keywords present', () {
+      final tDefault = ThreatParser.parseLocalThreats('Шахед на Новосілки');
+      expect(tDefault.isNotEmpty, isTrue);
+      expect((tDefault.first['path'] as List).first['name'], contains('Теремки'));
+
+      final tVysh = ThreatParser.parseLocalThreats('Шахед на Новосілки біля Вишгорода');
+      expect(tVysh.isNotEmpty, isTrue);
+      expect((tVysh.first['path'] as List).first['name'], contains('Вишгород'));
+
+      final tSea = ThreatParser.parseLocalThreats('Новосілки, заходить з Водосховища');
+      expect(tSea.isNotEmpty, isTrue);
+      expect((tSea.first['path'] as List).any((p) => p['name'].toString().contains('Вишгород')), isTrue);
+    });
+
+    test('Inverts 2-location order when destination precedes locA and origin precedes locB', () {
+      final t1 = ThreatParser.parseLocalThreats('На Вишгород з Водосховища');
+      expect(t1.isNotEmpty, isTrue);
+      final path1 = t1.first['path'] as List;
+      expect(path1.length, equals(2));
+      expect(path1[0]['name'], contains('водосховище'));
+      expect(path1[1]['name'], contains('Вишгород'));
+
+      final t2 = ThreatParser.parseLocalThreats('Курсом на Тетіїв від Черкаської');
+      expect(t2.isNotEmpty, isTrue);
+      final path2 = t2.first['path'] as List;
+      expect(path2.length, equals(2));
+      expect(path2[0]['name'], contains('Черкащ'));
+      expect(path2[1]['name'], contains('Тетіїв'));
+    });
+
+    test('Geo-deduplication merges channel with " • " and tracks merged_msg_ids and merged_post_ids', () {
+      final msgs = [
+        {
+          'id': 101,
+          'postId': 'kyiv_channel/101',
+          'channel': 'Kyiv AirDefense 🌇',
+          'text': 'Троєщина',
+          'date': '2026-10-15T14:09:00Z',
+          'type': 'danger',
+        },
+        {
+          'id': 202,
+          'postId': 'sk_channel/202',
+          'channel': 'SK_DM_SK',
+          'text': 'Вилізло одне на Трою',
+          'date': '2026-10-15T14:09:25Z',
+          'type': 'danger',
+        },
+      ];
+
+      final deduped = ThreatParser.deduplicateMessages(msgs);
+      expect(deduped.length, equals(1));
+      expect(deduped.first['channel'], equals('Kyiv AirDefense 🌇 • SK_DM_SK'));
+      final mergedMsgs = deduped.first['merged_msg_ids'] as List;
+      expect(mergedMsgs.contains(202), isTrue);
+      final mergedPosts = deduped.first['merged_post_ids'] as List;
+      expect(mergedPosts.contains('sk_channel/202'), isTrue);
+    });
+  });
 }
 
