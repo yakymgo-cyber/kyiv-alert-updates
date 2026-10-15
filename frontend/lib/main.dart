@@ -62,6 +62,11 @@ class KyivAlertApp extends StatelessWidget {
           elevation: 0,
         ),
         cardColor: const Color(0xFF1E1E1E),
+        snackBarTheme: const SnackBarThemeData(
+          contentTextStyle: TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w500),
+          backgroundColor: Color(0xFF262630),
+          behavior: SnackBarBehavior.floating,
+        ),
       ),
       navigatorObservers: [
         if (Firebase.apps.isNotEmpty)
@@ -1030,8 +1035,8 @@ List<String> _dynamicExtraChannels = [];
 List<String> _dynamicDangerKeywords = [];
 List<String> _dynamicClearKeywords = [];
 
-const int kCurrentVersionCode = 19;
-const String kCurrentVersionName = '1.2.16';
+const int kCurrentVersionCode = 20;
+const String kCurrentVersionName = '1.2.17';
 
 class RemoteConfig {
   final int versionCode;
@@ -2626,8 +2631,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('📋 Зведення скопійовано для відправки рідним!'),
-        backgroundColor: Colors.cyan,
+        content: Text(
+          '📋 Зведення скопійовано для відправки рідним!',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+        ),
+        backgroundColor: Color(0xFF00838F),
         duration: Duration(seconds: 3),
       ),
     );
@@ -2673,7 +2681,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
               child: CircularProgressIndicator(strokeWidth: 2, color: Colors.cyanAccent),
             ),
             SizedBox(width: 12),
-            Text('Перевіряємо наявність оновлень...'),
+            Text(
+              'Перевіряємо наявність оновлень...',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+            ),
           ],
         ),
         duration: Duration(seconds: 2),
@@ -2686,7 +2697,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     if (cfg.versionCode > kCurrentVersionCode && cfg.apkUrl.isNotEmpty) {
       messenger.showSnackBar(
         SnackBar(
-          content: Text('🚀 Доступне оновлення v${cfg.versionName} (збірка ${cfg.versionCode})! Банер зʼявився вгорі.'),
+          content: Text(
+            '🚀 Доступне оновлення v${cfg.versionName} (збірка ${cfg.versionCode})! Банер зʼявився вгорі.',
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+          ),
           backgroundColor: Colors.purple.shade700,
           duration: const Duration(seconds: 4),
         ),
@@ -2694,7 +2708,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     } else if (ok) {
       messenger.showSnackBar(
         SnackBar(
-          content: Text('✅ У вас встановлена найновіша версія (v$kCurrentVersionName, збірка $kCurrentVersionCode).'),
+          content: Text(
+            '✅ У вас встановлена найновіша версія (v$kCurrentVersionName, збірка $kCurrentVersionCode).',
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+          ),
           backgroundColor: Colors.green.shade800,
           duration: const Duration(seconds: 3),
         ),
@@ -2702,8 +2719,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     } else {
       messenger.showSnackBar(
         const SnackBar(
-          content: Text('⚠️ Не вдалося звʼязатися із сервером оновлень. Перевірте зʼєднання з мережею.'),
-          backgroundColor: Colors.orangeAccent,
+          content: Text(
+            '⚠️ Не вдалося звʼязатися із сервером оновлень. Перевірте зʼєднання з мережею.',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+          ),
+          backgroundColor: Color(0xFFC65100),
           duration: Duration(seconds: 4),
         ),
       );
@@ -2849,8 +2869,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Помилка безпеки: завантаження APK дозволено виключно через HTTPS з офіційних серверів GitHub'),
-            backgroundColor: Colors.redAccent,
+            content: Text(
+              'Помилка безпеки: завантаження APK дозволено виключно через HTTPS з офіційних серверів GitHub',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+            ),
+            backgroundColor: Color(0xFFC62828),
           ),
         );
       }
@@ -2957,9 +2980,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
-                  content: Text('⚠️ Дозвольте "Встановлювати невідомі додатки" на відкритому екрані та натисніть "Оновити" ще раз.'),
+                  content: Text(
+                    '⚠️ Дозвольте "Встановлювати невідомі додатки" на відкритому екрані та натисніть "Оновити" ще раз.',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+                  ),
                   duration: Duration(seconds: 7),
-                  backgroundColor: Colors.amber,
+                  backgroundColor: Color(0xFFB26A00),
                 ),
               );
             }
@@ -2971,8 +2997,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Файл оновлення збережено: ${apkFile.path}'),
-              backgroundColor: Colors.green,
+              content: Text(
+                'Файл оновлення збережено: ${apkFile.path}',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+              ),
+              backgroundColor: const Color(0xFF2E7D32),
             ),
           );
         }
@@ -2984,8 +3013,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Помилка оновлення: $e'),
-            backgroundColor: Colors.redAccent,
+            content: Text(
+              'Помилка оновлення: $e',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+            ),
+            backgroundColor: const Color(0xFFC62828),
           ),
         );
       }
@@ -3832,7 +3864,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                               if (context.mounted) {
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
-                                    content: Text('📋 Ранковий звіт успішно скопійовано!'),
+                                    content: Text(
+                                      '📋 Ранковий звіт успішно скопійовано!',
+                                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+                                    ),
                                     backgroundColor: Colors.purple,
                                     duration: Duration(seconds: 2),
                                   ),
@@ -3853,11 +3888,16 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     );
   }
 
-  void _showWatchedLocationsSheet(BuildContext context) {
+  void _showWatchedLocationsSheet(BuildContext context) async {
     final searchCtrl = TextEditingController();
     final nameCtrl = TextEditingController();
+    double radiusKm = 4.0;
+    List<Map<String, dynamic>> searchResults = [];
+    bool isSearching = false;
+    bool isAddingNew = false;
+    Map<String, dynamic>? selectedResult;
 
-    showModalBottomSheet(
+    await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: const Color(0xFF1E1E1E),
@@ -3865,12 +3905,6 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) {
-        double radiusKm = 4.0;
-        List<Map<String, dynamic>> searchResults = [];
-        bool isSearching = false;
-        bool isAddingNew = false;
-        Map<String, dynamic>? selectedResult;
-
         return StatefulBuilder(
           builder: (sheetContext, setSheetState) {
             final watchedList = ref.watch(watchedLocationsProvider);
@@ -4223,7 +4257,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                               onPressed: () {
                                 if (selectedResult == null && searchCtrl.text.trim().isEmpty) {
                                   ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(content: Text('Спочатку знайдіть та виберіть адресу!')),
+                                    const SnackBar(
+                                      content: Text(
+                                        'Спочатку знайдіть та виберіть адресу!',
+                                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+                                      ),
+                                    ),
                                   );
                                   return;
                                 }
@@ -4247,7 +4286,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
-                                    content: Text('Зону "$name" успішно додано!'),
+                                    content: Text(
+                                      'Зону "$name" успішно додано!',
+                                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+                                    ),
                                     backgroundColor: Colors.purple,
                                   ),
                                 );
@@ -4283,17 +4325,17 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
           },
         );
       },
-    ).whenComplete(() {
-      searchCtrl.dispose();
-      nameCtrl.dispose();
-    });
+    );
+
+    searchCtrl.dispose();
+    nameCtrl.dispose();
   }
 
-  void _showAddPointFromMapDialog(BuildContext context, LatLng point) {
+  void _showAddPointFromMapDialog(BuildContext context, LatLng point) async {
     final nameCtrl = TextEditingController(text: 'Моя точка');
     double radiusKm = 4.0;
 
-    showModalBottomSheet(
+    await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: const Color(0xFF1E1E1E),
@@ -4400,7 +4442,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                         Navigator.pop(sheetContext);
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
-                            content: Text('Зону "$name" успішно додано!'),
+                            content: Text(
+                              'Зону "$name" успішно додано!',
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+                            ),
                             backgroundColor: Colors.purple,
                           ),
                         );
@@ -4413,9 +4458,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
           },
         );
       },
-    ).whenComplete(() {
-      nameCtrl.dispose();
-    });
+    );
+
+    nameCtrl.dispose();
   }
 
   @override
@@ -4554,11 +4599,14 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
               });
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: Text(_isNightWatchMode
-                      ? '🌙 Режим "Нічний вартовий" увімкнено! Радіус зон розширено на +3.5 км, увімкнено готовність до гучних сигналів тривоги.'
-                      : '☀️ Режим "Нічний вартовий" вимкнено.'),
+                  content: Text(
+                    _isNightWatchMode
+                        ? '🌙 Режим "Нічний вартовий" увімкнено! Радіус зон розширено на +3.5 км, увімкнено готовність до гучних сигналів тривоги.'
+                        : '☀️ Режим "Нічний вартовий" вимкнено.',
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+                  ),
                   duration: const Duration(seconds: 3),
-                  backgroundColor: _isNightWatchMode ? const Color(0xFF1E1035) : Colors.grey.shade800,
+                  backgroundColor: _isNightWatchMode ? const Color(0xFF2A164D) : const Color(0xFF2C2C34),
                 ),
               );
             },

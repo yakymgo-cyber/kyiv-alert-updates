@@ -1,8 +1,8 @@
 {
-  "version_code": 19,
-  "version_name": "1.2.16",
-  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.16/app-release.apk",
-  "changelog": "Комплексний Security Hardening: HTTPS GitHub-only завантаження APK, перевірка ZIP-сигнатури, захист від Path Traversal та обфускація коду",
+  "version_code": 20,
+  "version_name": "1.2.17",
+  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.17/app-release.apk",
+  "changelog": "Виправлення UI: збереження форми додавання зони при відкритті клавіатури та контрастний білий текст у SnackBar",
   "extra_locations": {
     "новосілки": {
       "lat": 50.3547,
