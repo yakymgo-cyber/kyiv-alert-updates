@@ -253,8 +253,8 @@ final watchedLocationsProvider = NotifierProvider<WatchedLocationsNotifier, List
   return WatchedLocationsNotifier();
 });
 
-const int kCurrentVersionCode = 31;
-const String kCurrentVersionName = '1.2.28';
+const int kCurrentVersionCode = 32;
+const String kCurrentVersionName = '1.2.29';
 
 
 class RemoteConfigNotifier extends Notifier<RemoteConfig> {
@@ -2579,7 +2579,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     final alt = copy['altitudeMeters'] as int?;
                                     if ((curType == 'shahed' || curType == 'unknown') && (alt == null || alt >= 1500)) {
                                       copy['type'] = 'shahed_jet';
-                                      copy['speed'] = 480.0;
+                                      copy['speed'] = 550.0;
                                       copy['label'] = 'Реактивний БпЛА';
                                     }
                                   }
@@ -2716,7 +2716,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   if (rawType == 'missile_ballistic' && speed < 1000.0) {
                                     speed = 5000.0;
                                   } else if (rawType == 'shahed_jet' && speed < 300.0) {
-                                    speed = 480.0;
+                                    speed = 550.0;
                                   }
 
                                   String effectiveLabel = (t['label'] ?? '').toString();
@@ -2813,7 +2813,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         if (existingIsJet && rawType == 'shahed' && !hasPistonDroneInMsg) {
                                           rawType = 'shahed_jet';
                                           effectiveLabel = _getDefaultThreatLabel('shahed_jet');
-                                          speed = math.max((existing['speed'] as num?)?.toDouble() ?? 480.0, 480.0);
+                                          speed = math.max((existing['speed'] as num?)?.toDouble() ?? 550.0, 550.0);
                                         }
                                         if (!existingIsMissile || rawType.contains('missile') || rawType == 'kab') {
                                           existing['type'] = rawType;
@@ -2901,7 +2901,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           if (existingIsJet && rawType == 'shahed' && !hasPistonDroneInMsg) {
                                             rawType = 'shahed_jet';
                                             effectiveLabel = _getDefaultThreatLabel('shahed_jet');
-                                            speed = math.max((existing['speed'] as num?)?.toDouble() ?? 480.0, 480.0);
+                                            speed = math.max((existing['speed'] as num?)?.toDouble() ?? 550.0, 550.0);
                                           }
 
                                           if (!existingIsMissile || rawType.contains('missile') || rawType == 'kab') {
@@ -3056,7 +3056,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         }
 
                                         final double timeDiffHours = timeDiffSeconds / 3600.0;
-                                        final double effSpeed = isAnyMissile ? math.max(speed, 5000.0) : (isJetThreat ? math.max(speed, 480.0) : speed);
+                                        final double effSpeed = isAnyMissile ? math.max(speed, 5000.0) : (isJetThreat ? math.max(speed, 550.0) : speed);
                                         double maxAllowedKm = isAnyMissile
                                             ? (effSpeed * timeDiffHours * 1.2).clamp(10.0, 90.0)
                                             : (isJetThreat
@@ -3080,7 +3080,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         } else if (isJetThreat) {
                                           if (!hasPistonDroneInMsg) {
                                             existing['type'] = 'shahed_jet';
-                                            existing['speed'] = math.max((existing['speed'] as num?)?.toDouble() ?? 480.0, (t['speed'] as num?)?.toDouble() ?? 480.0);
+                                            existing['speed'] = math.max((existing['speed'] as num?)?.toDouble() ?? 550.0, (t['speed'] as num?)?.toDouble() ?? 550.0);
                                             existing['label'] = 'Реактивний БпЛА';
                                           }
                                         } else if (t['speed'] != null && (t['speed'] as num) > 0) {
@@ -3291,16 +3291,16 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         } else {
                                           targetThreat['type'] = 'shahed_jet';
                                           targetThreat['label'] = 'Реактивний БпЛА';
-                                          targetThreat['speed'] = 480.0;
+                                          targetThreat['speed'] = 550.0;
                                         }
                                       } else if (targetThreat['type'] == 'shahed_jet') {
                                         // НІКОЛИ не понижувати вже встановлений тип shahed_jet назад до shahed, коли висота падає нижче 2000 м
                                         targetThreat['isDescending'] = true;
-                                        targetThreat['speed'] = math.max((targetThreat['speed'] as num?)?.toDouble() ?? 480.0, 480.0);
+                                        targetThreat['speed'] = math.max((targetThreat['speed'] as num?)?.toDouble() ?? 550.0, 550.0);
                                       } else if (alt >= 2000 && targetThreat['type'] == 'shahed') {
                                         targetThreat['type'] = 'shahed_jet';
                                         targetThreat['label'] = 'Реактивний БпЛА';
-                                        targetThreat['speed'] = 480.0;
+                                        targetThreat['speed'] = 550.0;
                                       }
                                     } else if (isDescKeyword) {
                                       targetThreat['isDescending'] = true;
@@ -3820,7 +3820,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                               final String originName = homeLoc?.name ?? 'Київ';
                                               final double distMeters = const Distance().as(LengthUnit.Meter, originPt, _rulerTargetPoint!);
                                               final double distKm = distMeters / 1000.0;
-                                              final int jetMin = (distKm / 480.0 * 60.0).round().clamp(1, 180);
+                                              final int jetMin = (distKm / 550.0 * 60.0).round().clamp(1, 180);
                                               final int uavMin = (distKm / 185.0 * 60.0).round().clamp(1, 999);
                                               final int missileSec = (distMeters / 250.0).round().clamp(1, 9999);
                                               return FractionalTranslation(

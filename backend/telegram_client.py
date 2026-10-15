@@ -716,10 +716,10 @@ def analyze_threat(text, altitude_meters=None):
             except ValueError:
                 pass
 
-    # 9. Реактивний БПЛА (500 км/год) лише якщо явно є маркери або висота >= 4000 м
+    # 9. Реактивний БПЛА (550 км/год) лише якщо явно є маркери або висота >= 4000 м
     is_jet = any(m in t_lower for m in ['реактив', 'швидкісн', 'бандерол', 'герань-3']) or high_alt
     if is_jet:
-        return {"type": "shahed_jet", "speed": 500, "label": "Реактивний БпЛА"}
+        return {"type": "shahed_jet", "speed": 550, "label": "Реактивний БпЛА"}
             
     # 10. За замовчуванням усі БПЛА — звичайний шахед/ДВЗ (185 км/год)
     return {"type": "shahed", "speed": 185, "label": "Ударний БпЛА (Шахед)"}

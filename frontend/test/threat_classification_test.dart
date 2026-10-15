@@ -73,7 +73,7 @@ void main() {
       final threats = notifier.parseLocalThreats('Реактивний шахед Герань-3 курсом на Ірпінь');
       expect(threats.isNotEmpty, isTrue);
       expect(threats.first['type'], equals('shahed_jet'));
-      expect(threats.first['speed'], equals(480.0));
+      expect(threats.first['speed'], equals(550.0));
     });
   });
 
@@ -221,7 +221,7 @@ void main() {
       final threats = notifier.parseLocalThreats('Швидкісний дрон / реактивний шахед на Бобровицю');
       expect(threats.isNotEmpty, isTrue);
       expect(threats.first['type'], equals('shahed_jet'));
-      expect(threats.first['speed'], equals(480.0));
+      expect(threats.first['speed'], equals(550.0));
     });
 
     test('Recognizes Chernihiv/Pryluky missile corridor locations', () {
@@ -694,7 +694,7 @@ void main() {
       final threats = notifier.parseLocalThreats('Бородянка, висота 2600 м');
       expect(threats.isNotEmpty, isTrue);
       expect(threats.first['type'], equals('shahed_jet'));
-      expect(threats.first['speed'], equals(480.0));
+      expect(threats.first['speed'], equals(550.0));
       expect(threats.first['altitudeMeters'], equals(2600));
 
       final lowAltThreats = notifier.parseLocalThreats('Бородянка, висота 1200 м');
@@ -708,11 +708,11 @@ void main() {
       final notifier = MessagesNotifier();
       final t2600 = notifier.parseLocalThreats('БпЛА через Бучу, висота 2600');
       expect(t2600.first['type'], equals('shahed_jet'));
-      expect(t2600.first['speed'], equals(480.0));
+      expect(t2600.first['speed'], equals(550.0));
 
       final t2200 = notifier.parseLocalThreats('Дрон на Бровари 2200');
       expect(t2200.first['type'], equals('shahed_jet'));
-      expect(t2200.first['speed'], equals(480.0));
+      expect(t2200.first['speed'], equals(550.0));
     });
 
     test('Excludes piston drone markers ("звичайний", "звч", "мопед", "двз") from shahed_jet even at high altitude', () {
@@ -726,11 +726,11 @@ void main() {
       final notifier = MessagesNotifier();
       final t1 = notifier.parseLocalThreats('Бандероль на Васильків');
       expect(t1.first['type'], equals('shahed_jet'));
-      expect(t1.first['speed'], equals(480.0));
+      expect(t1.first['speed'], equals(550.0));
 
       final t2 = notifier.parseLocalThreats('Турбо шахед курсом на Київ');
       expect(t2.first['type'], equals('shahed_jet'));
-      expect(t2.first['speed'], equals(480.0));
+      expect(t2.first['speed'], equals(550.0));
     });
 
     test('Recognizes Borshchahivka slang and correct residential coordinates', () {

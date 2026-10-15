@@ -262,7 +262,7 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
         highAlt);
 
     if (isJet) {
-      return {'type': 'shahed_jet', 'speed': explicitSpeed ?? 480.0, 'label': 'Реактивний БпЛА'};
+      return {'type': 'shahed_jet', 'speed': explicitSpeed ?? 550.0, 'label': 'Реактивний БпЛА'};
     }
     return {'type': 'shahed', 'speed': explicitSpeed ?? 185.0, 'label': 'Ударний БпЛА (Шахед)'};
   }
@@ -1245,7 +1245,7 @@ double _getDefaultThreatSpeed(String type) {
     case 'uav_guided': return 220.0;
     case 'uav_recon': return 130.0;
     case 'uav_decoy': return 160.0;
-    case 'shahed_jet': return 480.0;
+    case 'shahed_jet': return 550.0;
     case 'shahed':
     default: return 185.0;
   }

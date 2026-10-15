@@ -358,7 +358,7 @@ void main() {
           'path': [const LatLng(50.60, 30.30), const LatLng(50.78, 30.30)],
           'waypoints': [const LatLng(50.60, 30.30), const LatLng(50.78, 30.30)],
           'type': 'shahed_jet',
-          'speed': 480.0,
+          'speed': 550.0,
           'lastUpdated': DateTime.parse('2026-10-15T20:03:00Z'),
         }
       ];
