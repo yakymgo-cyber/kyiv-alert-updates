@@ -253,8 +253,8 @@ final watchedLocationsProvider = NotifierProvider<WatchedLocationsNotifier, List
   return WatchedLocationsNotifier();
 });
 
-const int kCurrentVersionCode = 35;
-const String kCurrentVersionName = '1.2.32';
+const int kCurrentVersionCode = 36;
+const String kCurrentVersionName = '1.2.33';
 
 
 class RemoteConfigNotifier extends Notifier<RemoteConfig> {

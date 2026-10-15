@@ -507,7 +507,12 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
         continue;
       }
 
-      final searchLine = lineLower.replaceAll(RegExp(r'київщин\w*|київськ\w*'), '        ');
+      // Захищаємо конкретні інфраструктурні об'єкти (Київська ГЕС, Київська ГАЕС) перед видаленням загального слова "київськ"
+      var searchLine = lineLower.replaceAllMapped(
+        RegExp(r'київськ[а-яіїєґ]*\s+(гес|гаес)\b', caseSensitive: false),
+        (m) => ' ${m.group(1)} ',
+      );
+      searchLine = searchLine.replaceAll(RegExp(r'київщин[а-яіїєґ]*|київськ[а-яіїєґ]*', caseSensitive: false), '        ');
       final List<(int, int, String, (double, double, String))> rawLocs = [];
 
       kKyivLocations.forEach((key, data) {
@@ -518,7 +523,12 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
           final isWordStart = (idx == 0 || !RegExp(r'[а-яіїєґa-z0-9]').hasMatch(searchLine[idx - 1]));
           if (isWordStart) {
             bool isFalseMatch = false;
-            if (key == 'гора') {
+            if (key == 'гес' || key == 'гаес') {
+              final afterIdx = idx + key.length;
+              if (afterIdx < searchLine.length && RegExp(r'[а-яіїєґa-z0-9]').hasMatch(searchLine[afterIdx])) {
+                isFalseMatch = true;
+              }
+            } else if (key == 'гора') {
               final prefix = searchLine.substring(math.max(0, idx - 15), idx).toLowerCase();
               if (prefix.contains('батиєв') || prefix.contains('черепанов')) {
                 isFalseMatch = true;

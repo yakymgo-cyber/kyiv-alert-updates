@@ -837,7 +837,72 @@ void main() {
       expect(ThreatParser.categorizeLocalMessage('В УКРИТТЯ'), equals('danger'));
     });
   });
+
+  group('Energy Infrastructure (ТЕЦ, ТЕС, ГЕС) and Lukianivka Metro Tests', () {
+    final notifier = MessagesNotifier();
+
+    test('Parses ТЕЦ 1 through 6 correctly', () {
+      final t1 = notifier.parseLocalThreats('Шахед на ТЕЦ-1');
+      expect(t1.isNotEmpty, isTrue);
+      expect((t1.first['path'] as List)[0]['name'], contains('ТЕЦ-1'));
+
+      final t2 = notifier.parseLocalThreats('БпЛА повз ТЕЦ-2');
+      expect(t2.isNotEmpty, isTrue);
+      expect((t2.first['path'] as List)[0]['name'], contains('ТЕЦ-2'));
+
+      final t3 = notifier.parseLocalThreats('Курс на ТЕЦ 3');
+      expect(t3.isNotEmpty, isTrue);
+      expect((t3.first['path'] as List)[0]['name'], contains('ТЕЦ-3'));
+
+      final t4 = notifier.parseLocalThreats('Ціль в бік Дарницької ТЕЦ');
+      expect(t4.isNotEmpty, isTrue);
+      expect((t4.first['path'] as List)[0]['name'], contains('Дарницька ТЕЦ'));
+
+      final t5 = notifier.parseLocalThreats('Шахед на ТЕЦ-5');
+      expect(t5.isNotEmpty, isTrue);
+      expect((t5.first['path'] as List)[0]['name'], contains('ТЕЦ-5'));
+
+      final t6 = notifier.parseLocalThreats('БпЛА повз ТЕЦ-6');
+      expect(t6.isNotEmpty, isTrue);
+      expect((t6.first['path'] as List)[0]['name'], contains('ТЕЦ-6'));
+    });
+
+    test('Parses Київська ГЕС, ГАЕС, Трипільська ТЕС, Білоцерківська ТЕЦ', () {
+      final tGes = notifier.parseLocalThreats('Шахед у напрямку Київської ГЕС');
+      expect(tGes.isNotEmpty, isTrue);
+      expect((tGes.first['path'] as List)[0]['name'], contains('Київська ГЕС'));
+
+      final tGaes = notifier.parseLocalThreats('Ціль повз ГАЕС на Вишгород');
+      expect(tGaes.isNotEmpty, isTrue);
+      expect((tGaes.first['path'] as List).any((p) => p['name'].toString().contains('Київська ГАЕС')), isTrue);
+
+      final tTes = notifier.parseLocalThreats('БпЛА курсом на Трипільську ТЕС');
+      expect(tTes.isNotEmpty, isTrue);
+      expect((tTes.first['path'] as List)[0]['name'], contains('Трипільська ТЕС'));
+
+      final tBc = notifier.parseLocalThreats('Шахед на Білоцерківську ТЕЦ');
+      expect(tBc.isNotEmpty, isTrue);
+      expect((tBc.first['path'] as List)[0]['name'], contains('Білоцерківська ТЕЦ'));
+    });
+
+    test('Lukianivka strictly resolves to Kyiv Metro Lukianivka and not the village', () {
+      final tLuk1 = notifier.parseLocalThreats('Шахед на Лук\'янівку');
+      expect(tLuk1.isNotEmpty, isTrue);
+      final p1 = (tLuk1.first['path'] as List)[0];
+      expect(p1['name'], contains('Лук\'янівка'));
+      expect(p1['lat'], closeTo(50.4628, 0.01));
+      expect(p1['lon'], closeTo(30.4815, 0.01));
+
+      final tLuk2 = notifier.parseLocalThreats('БпЛА через Лукʼянку на Поділ');
+      expect(tLuk2.isNotEmpty, isTrue);
+      final p2 = (tLuk2.first['path'] as List)[0];
+      expect(p2['name'], contains('Лук\'янівка'));
+      expect(p2['lat'], closeTo(50.4628, 0.01));
+      expect(p2['lon'], closeTo(30.4815, 0.01));
+    });
+  });
 }
+
 
 
 
