@@ -1,8 +1,8 @@
 {
-  "version_code": 20,
-  "version_name": "1.2.17",
-  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.17/app-release.apk",
-  "changelog": "Виправлення UI: збереження форми додавання зони при відкритті клавіатури та контрастний білий текст у SnackBar",
+  "version_code": 21,
+  "version_name": "1.2.18",
+  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.18/app-release.apk",
+  "changelog": "Модульна архітектура, Голосовий диктор (TTS), Таймер пусків Ту-95/Калібрів, Живий радар на екрані блокування",
   "extra_locations": {
     "новосілки": {
       "lat": 50.3547,

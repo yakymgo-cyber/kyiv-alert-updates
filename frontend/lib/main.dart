@@ -1,18 +1,70 @@
-import 'dart:convert';
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'desktop_map_wrapper.dart';
-
-import 'package:latlong2/latlong.dart';
-import 'package:http/http.dart' as http;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
+import 'package:latlong2/latlong.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_analytics/firebase_analytics.dart';
+
+import 'desktop_map_wrapper.dart';
+
+// Модульні компоненти проєкту
+import 'package:frontend/models/alert_models.dart';
+import 'package:frontend/data/kyiv_gazetteer.dart';
+import 'package:frontend/services/threat_parser.dart';
+import 'package:frontend/services/update_service.dart';
+import 'package:frontend/ui/sheets/morning_digest_sheet.dart';
+import 'package:frontend/ui/sheets/watched_locations_sheet.dart';
+import 'package:frontend/services/voice_alert_service.dart';
+import 'package:frontend/services/live_radar_notification_service.dart';
+
+// Ре-експорт для сумісності з тестами та зовнішніми модулями
+export 'package:frontend/models/alert_models.dart';
+export 'package:frontend/data/kyiv_gazetteer.dart';
+export 'package:frontend/services/threat_parser.dart';
+export 'package:frontend/services/update_service.dart';
+export 'package:frontend/ui/sheets/morning_digest_sheet.dart';
+export 'package:frontend/ui/sheets/watched_locations_sheet.dart';
+export 'package:frontend/services/voice_alert_service.dart';
+export 'package:frontend/services/live_radar_notification_service.dart';
+
+
+// Аліаси та зв'язки для зворотної сумісності
+const _kFarRegions = kFarRegions;
+const _kExternalBorderKeys = kExternalBorderKeys;
+Map<String, (double, double, String)> get _kKyivLocations => kKyivLocations;
+set _kKyivLocations(Map<String, (double, double, String)> val) => kKyivLocations = val;
+Map<String, (double, double, String)> get _kBaseKyivLocations => kKyivRegionLocations;
+Map<String, (double, double, String)> get _learnedLocations => learnedLocations;
+List<String> get _dynamicExtraChannels => dynamicExtraChannels;
+set _dynamicExtraChannels(List<String> val) => dynamicExtraChannels = val;
+List<String> get _dynamicDangerKeywords => dynamicDangerKeywords;
+set _dynamicDangerKeywords(List<String> val) => dynamicDangerKeywords = val;
+List<String> get _dynamicClearKeywords => dynamicClearKeywords;
+set _dynamicClearKeywords(List<String> val) => dynamicClearKeywords = val;
+Future<File?> _getAppStorageFile(String fileName) => getAppStorageFile(fileName);
+Future<void> _loadLearnedLocations() => loadLearnedLocations();
+String _cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlText(html, maxLength: maxLength);
+String _categorizeLocalMessage(String text) => ThreatParser.categorizeLocalMessage(text);
+String _getDefaultThreatLabel(String type) => getDefaultThreatLabel(type);
+double _getDefaultThreatSpeed(String type) => getDefaultThreatSpeed(type);
+int _getThreatLevel(bool isAlert, bool isKyivRegion, List<Map<String, dynamic>> threats, {bool globalMissileThreat = false}) => getThreatLevel(isAlert, isKyivRegion, threats, globalMissileThreat: globalMissileThreat);
+Color _getAlertFillColor(int threatLevel) => getAlertFillColor(threatLevel);
+Color _getAlertBorderColor(int threatLevel, {bool defaultFaint = true}) => getAlertBorderColor(threatLevel, defaultFaint: defaultFaint);
+double _minDistanceToPointMeters(LatLng center, List<LatLng> path) => minDistanceToPointMeters(center, path);
+double _calculateBearing(LatLng from, LatLng to) => calculateBearing(from, to);
+Polygon _buildForecastCone(LatLng currentPos, double bearing, double speedMs, Color color, bool isUav) => buildForecastCone(currentPos, bearing, speedMs, color, isUav);
+(LatLng, double) _calculateCirclingPosAndAngle(LatLng center, double timeSec) => calculateCirclingPosAndAngle(center, timeSec);
+(LatLng, double) _interpolatePosAndAngle(List<LatLng> path, double fraction) => interpolatePosAndAngle(path, fraction);
+String _formatEta(double distanceMeters, double speedMs) => formatEta(distanceMeters, speedMs);
+double _projectedForwardDistance(LatLng locPoint, LatLng pPrev, LatLng pLast, double maxDistanceMeters) => projectedForwardDistance(locPoint, pPrev, pLast, maxDistanceMeters);
 
 String _staticTestModeTime = DateTime.now().toUtc().toIso8601String();
 
@@ -127,99 +179,6 @@ final alertsProvider = NotifierProvider<AlertsNotifier, Map<String, bool>>(() {
   return AlertsNotifier();
 });
 
-class WatchedLocation {
-  final String id;
-  final String name;
-  final String address;
-  final LatLng point;
-  final double radiusMeters;
-  final bool enabled;
-
-  const WatchedLocation({
-    required this.id,
-    required this.name,
-    required this.address,
-    required this.point,
-    this.radiusMeters = 4000.0,
-    this.enabled = true,
-  });
-
-  WatchedLocation copyWith({
-    String? id,
-    String? name,
-    String? address,
-    LatLng? point,
-    double? radiusMeters,
-    bool? enabled,
-  }) {
-    return WatchedLocation(
-      id: id ?? this.id,
-      name: name ?? this.name,
-      address: address ?? this.address,
-      point: point ?? this.point,
-      radiusMeters: radiusMeters ?? this.radiusMeters,
-      enabled: enabled ?? this.enabled,
-    );
-  }
-
-  Map<String, dynamic> toJson() => {
-    'id': id,
-    'name': name,
-    'address': address,
-    'lat': point.latitude,
-    'lon': point.longitude,
-    'radiusMeters': radiusMeters,
-    'enabled': enabled,
-  };
-
-  factory WatchedLocation.fromJson(Map<String, dynamic> json) {
-    return WatchedLocation(
-      id: json['id'] as String,
-      name: json['name'] as String,
-      address: json['address'] as String? ?? '',
-      point: LatLng((json['lat'] as num).toDouble(), (json['lon'] as num).toDouble()),
-      radiusMeters: (json['radiusMeters'] as num?)?.toDouble() ?? 4000.0,
-      enabled: json['enabled'] as bool? ?? true,
-    );
-  }
-}
-
-String? _cachedAppFilesDir;
-
-Future<String?> _getAppFilesDirPath() async {
-  if (_cachedAppFilesDir != null) return _cachedAppFilesDir;
-  if (!kIsWeb && Platform.isAndroid) {
-    try {
-      const platform = MethodChannel('ua.kyiv.alert.monitor/widget');
-      final String? path = await platform.invokeMethod<String>('getFilesDir');
-      if (path != null && path.isNotEmpty) {
-        _cachedAppFilesDir = path;
-        return path;
-      }
-    } catch (_) {}
-  } else if (!kIsWeb && Platform.isWindows) {
-    final envAppdata = Platform.environment['APPDATA'];
-    if (envAppdata != null) {
-      final dir = Directory('$envAppdata/KyivAlert');
-      if (!dir.existsSync()) dir.createSync(recursive: true);
-      _cachedAppFilesDir = dir.path;
-      return dir.path;
-    }
-  }
-  return null;
-}
-
-Future<File?> _getAppStorageFile(String fileName) async {
-  try {
-    final dirPath = await _getAppFilesDirPath();
-    if (dirPath != null) {
-      return File('$dirPath/$fileName');
-    }
-    return File(fileName);
-  } catch (_) {
-    return null;
-  }
-}
 
 class WatchedLocationsNotifier extends Notifier<List<WatchedLocation>> {
   static const _defaultLocations = [
@@ -294,840 +253,9 @@ final watchedLocationsProvider = NotifierProvider<WatchedLocationsNotifier, List
   return WatchedLocationsNotifier();
 });
 
-Future<List<Map<String, dynamic>>> searchStreetAddress(String query) async {
-  final trimmed = query.trim();
-  if (trimmed.isEmpty) return [];
-  try {
-    final uri = Uri.parse(
-      'https://nominatim.openstreetmap.org/search?format=json&q=${Uri.encodeComponent('$trimmed, Київська область')}&limit=5&accept-language=uk',
-    );
-    final response = await http.get(
-      uri,
-      headers: {'User-Agent': 'ua.kyiv.alert.monitor'},
-    ).timeout(const Duration(seconds: 4));
-    if (response.statusCode == 200) {
-      final List data = json.decode(utf8.decode(response.bodyBytes));
-      return data.map((item) => {
-        'display_name': (item['display_name'] ?? '').toString(),
-        'lat': double.tryParse(item['lat']?.toString() ?? '') ?? 0.0,
-        'lon': double.tryParse(item['lon']?.toString() ?? '') ?? 0.0,
-      }).where((m) => (m['lat'] as double) != 0.0).toList();
-    }
-  } catch (_) {}
-  return [];
-}
+const int kCurrentVersionCode = 21;
+const String kCurrentVersionName = '1.2.18';
 
-double _projectedForwardDistance(LatLng locPoint, LatLng pPrev, LatLng pLast, double maxDistanceMeters) {
-  const distance = Distance();
-  final double midLatRad = (pPrev.latitude + pLast.latitude + locPoint.latitude) / 3.0 * math.pi / 180.0;
-  const double metersPerLat = 111132.95;
-  final double metersPerLon = 111132.95 * math.cos(midLatRad);
-
-  final double ax = pLast.longitude * metersPerLon;
-  final double ay = pLast.latitude * metersPerLat;
-  final double vx = (pLast.longitude - pPrev.longitude) * metersPerLon;
-  final double vy = (pLast.latitude - pPrev.latitude) * metersPerLat;
-  final double vLen = math.sqrt(vx * vx + vy * vy);
-  if (vLen < 1.0) return distance.as(LengthUnit.Meter, locPoint, pLast);
-
-  final double dirX = vx / vLen;
-  final double dirY = vy / vLen;
-
-  final double bx = ax + dirX * maxDistanceMeters;
-  final double by = ay + dirY * maxDistanceMeters;
-
-  final double cx = locPoint.longitude * metersPerLon;
-  final double cy = locPoint.latitude * metersPerLat;
-
-  final double abx = bx - ax;
-  final double aby = by - ay;
-  final double ab2 = abx * abx + aby * aby;
-
-  final double acx = cx - ax;
-  final double acy = cy - ay;
-  final double t = (acx * abx + acy * aby) / ab2;
-  final double clampedT = t.clamp(0.0, 1.0);
-  final double projX = ax + clampedT * abx;
-  final double projY = ay + clampedT * aby;
-  final double dx = cx - projX;
-  final double dy = cy - projY;
-  return math.sqrt(dx * dx + dy * dy);
-}
-
-String _formatEta(double distanceMeters, double speedMs) {
-  if (distanceMeters < 1500.0) {
-    return 'НАД ВАМИ!';
-  }
-  if (speedMs <= 0.0) return '~? хв';
-  final int etaSec = (distanceMeters / speedMs).round();
-  final int mins = etaSec ~/ 60;
-  final int secs = etaSec % 60;
-  if (mins > 0) {
-    return '~$mins хв $secs с';
-  } else {
-    return '~$secs с';
-  }
-}
-
-const Set<String> _kExternalBorderKeys = {
-  'житомирщин', 'житомирськ', 'житомир', 'малин', 'коростень', 'радомишл', 'овруч',
-  'чернігівщин', 'черкащин', 'вінниччин', 'полтавщин',
-  'прилук', 'ніжин', 'носівк', 'ічня', 'пирятин', 'лубни', 'золотонош', 'канів',
-  'корсунь', 'мрин', 'вертіївк', 'мала дівиц', 'линовиц', 'остер', 'козелец', 'кіпті',
-  'курськ', 'брянськ', 'бєлгород', 'белгород', 'воронеж', 'орел', 'орл',
-  'крим', 'чауд', 'приморсько-ахтарськ', 'єйськ', 'енгельс', 'ахтубінськ',
-  'саваслейк', 'олень', 'каспій', 'мозир', 'гомел', 'тул', 'ростов',
-};
-
-const Set<String> _kFarRegions = {
-  'луцьк', 'хмель', 'хмельницьк', 'кременчук', 'одещин', 'одес', 'запоріж', 'дніпр', 'харків',
-  'львів', 'рівн', 'рівнен', 'терноп', 'франківськ', 'волин', 'миколаїв', 'херсон', 'сум',
-  'кропивницьк', 'кіровоград', 'полтавськ', 'полтав', 'чернівц', 'закарпат',
-  'вінниц', 'вінниччин', 'черкас', 'черкащин', 'житомир', 'чернігів',
-};
-
-const _kBaseKyivLocations = <String, (double, double, String)>{
-  'київ': (50.450, 30.523, 'Київ'),
-  'центр': (50.450, 30.523, 'Київ (Центр)'),
-  'голосіїв': (50.395, 30.512, 'Голосіїв'),
-  'теремк': (50.375, 30.452, 'Теремки'),
-  'деміїв': (50.404, 30.518, 'Деміївка'),
-  'вднг': (50.381, 30.477, 'ВДНГ'),
-  'феофані': (50.345, 30.488, 'Феофанія'),
-  'пирогів': (50.354, 30.512, 'Пирогів'),
-  'пирогов': (50.354, 30.512, 'Пирогів'),
-  'корчуват': (50.368, 30.548, 'Корчувате'),
-  'конча': (50.303, 30.575, 'Конча-Заспа'),
-  'чапаєвк': (50.318, 30.562, 'Віта-Литовська'),
-  'дарниц': (50.413, 30.638, 'Дарниця'),
-  'дврз': (50.446, 30.671, 'ДВРЗ'),
-  'рембаз': (50.428, 30.672, 'Рембаза'),
-  'позняк': (50.401, 30.633, 'Позняки'),
-  'осокорк': (50.391, 30.615, 'Осокорки'),
-  'бортнич': (50.384, 30.692, 'Бортничі'),
-  'вирлиц': (50.403, 30.666, 'Вирлиця'),
-  'харківськ': (50.415, 30.653, 'Харківський масив'),
-  'червоний хутір': (50.408, 30.682, 'Червоний Хутір'),
-  'деснян': (50.518, 30.603, 'Деснянський р-н'),
-  'троєщин': (50.514, 30.598, 'Троєщина'),
-  'троя': (50.514, 30.598, 'Троєщина'),
-  'трою': (50.514, 30.598, 'Троєщина'),
-  'лісов': (50.476, 30.627, 'Лісовий масив'),
-  'биківн': (50.476, 30.668, 'Биківня'),
-  'дніпров': (50.452, 30.604, 'Дніпровський р-н'),
-  'воскресенк': (50.485, 30.595, 'Воскресенка'),
-  'березняк': (50.426, 30.601, 'Березняки'),
-  'русанівк': (50.439, 30.596, 'Русанівка'),
-  'радужн': (50.488, 30.584, 'Райдужний'),
-  'райдужн': (50.488, 30.584, 'Райдужний'),
-  'оболон': (50.508, 30.498, 'Оболонь'),
-  'пуща': (50.543, 30.347, 'Пуща-Водиця'),
-  'мінськ': (50.522, 30.470, 'Мінський масив'),
-  'пріорк': (50.502, 30.456, 'Пріорка'),
-  'куренів': (50.489, 30.464, 'Куренівка'),
-  'печерськ': (50.432, 30.542, 'Печерськ'),
-  'звіринець': (50.418, 30.556, 'Звіринець'),
-  'теличк': (50.400, 30.568, 'Теличка'),
-  'поділ': (50.465, 30.513, 'Поділ'),
-  'подол': (50.465, 30.513, 'Поділ'),
-  'виноградар': (50.511, 30.419, 'Виноградар'),
-  'святошин': (50.457, 30.364, 'Святошин'),
-  'білич': (50.468, 30.342, 'Біличі'),
-  'новобілич': (50.476, 30.338, 'Новобіличі'),
-  'академ': (50.465, 30.355, 'Академмістечко'),
-  'борщагів': (50.422, 30.376, 'Борщагівка'),
-  'відрадн': (50.432, 30.422, 'Відрадний'),
-  'солом\'ян': (50.428, 30.478, 'Солом\'янка'),
-  'солом': (50.428, 30.478, 'Солом\'янка'),
-  'жулян': (50.395, 30.441, 'Жуляни'),
-  'шулявк': (50.454, 30.445, 'Шулявка'),
-  'караваєв': (50.441, 30.445, 'Караваєві Дачі'),
-  'лук\'янів': (50.462, 30.473, 'Лук\'янівка'),
-  'лукянів': (50.462, 30.473, 'Лук\'янівка'),
-  'сирец': (50.476, 30.440, 'Сирець'),
-  'сирц': (50.476, 30.440, 'Сирець'),
-  'нивк': (50.458, 30.404, 'Нивки'),
-  'берковец': (50.490, 30.370, 'Берковець'),
-  'берківц': (50.490, 30.370, 'Берковець'),
-  'шевченк': (50.461, 30.482, 'Шевченківський р-н'),
-  'татарк': (50.471, 30.481, 'Татарка'),
-  'видубич': (50.402, 30.561, 'Видубичі'),
-  'гідропарк': (50.445, 30.576, 'Гідропарк'),
-  'труханів': (50.462, 30.545, 'Труханів острів'),
-  'васильків': (50.178, 30.316, 'Васильків'),
-  'васильков': (50.178, 30.316, 'Васильків'),
-  'васік': (50.178, 30.316, 'Васильків'),
-  'крушинк': (50.231, 30.366, 'Крушинка'),
-  'глевах': (50.267, 30.319, 'Глеваха'),
-  'калинівк': (50.228, 30.228, 'Калинівка'),
-  'кобці': (50.185, 30.255, 'Кобці'),
-  'біла церкв': (49.795, 30.116, 'Біла Церква'),
-  'білу церкв': (49.795, 30.116, 'Біла Церква'),
-  'білої церкв': (49.795, 30.116, 'Біла Церква'),
-  'узин': (49.824, 30.413, 'Узин'),
-  'фастів': (50.081, 29.914, 'Фастів'),
-  'фастов': (50.081, 29.914, 'Фастів'),
-  'макарів': (50.459, 29.803, 'Макарів'),
-  'макаров': (50.459, 29.803, 'Макарів'),
-  'бородянк': (50.645, 29.923, 'Бородянка'),
-  'ірпін': (50.518, 30.239, 'Ірпінь'),
-  'ірпен': (50.518, 30.239, 'Ірпінь'),
-  'буч': (50.547, 30.222, 'Буча'),
-  'гостомел': (50.575, 30.258, 'Гостомель'),
-  'чайк': (50.434, 30.297, 'Чайки'),
-  'стоянк': (50.457, 30.245, 'Стоянка'),
-  'ворзел': (50.544, 30.158, 'Ворзель'),
-  'коцюбинськ': (50.491, 30.332, 'Коцюбинське'),
-  'вишнев': (50.393, 30.366, 'Вишневе'),
-  'крюківщин': (50.373, 30.366, 'Крюківщина'),
-  'софіївськ': (50.410, 30.366, 'Софіївська Борщагівка'),
-  'петропавлівськ': (50.435, 30.340, 'Петропавлівська Борщагівка'),
-  'боярк': (50.329, 30.293, 'Боярка'),
-  'чабан': (50.342, 30.424, 'Чабани'),
-  'гатному': (50.356, 30.402, 'Гатне'),
-  'гатне': (50.356, 30.402, 'Гатне'),
-  'хотів': (50.334, 30.468, 'Хотів'),
-  'хотов': (50.334, 30.468, 'Хотів'),
-  'лісник': (50.305, 30.513, 'Лісники'),
-  'ходосівк': (50.273, 30.516, 'Ходосівка'),
-  'підгірц': (50.244, 30.547, 'Підгірці'),
-  'козин': (50.211, 30.660, 'Козин'),
-  'обухів': (50.117, 30.630, 'Обухів'),
-  'обухов': (50.117, 30.630, 'Обухів'),
-  'українк': (50.144, 30.741, 'Українка'),
-  'трипілл': (50.116, 30.768, 'Трипілля'),
-  'кагарлик': (49.866, 30.822, 'Кагарлик'),
-  'ржищів': (49.967, 31.043, 'Ржищів'),
-  'миронівк': (49.664, 30.985, 'Миронівка'),
-  'богуслав': (49.546, 30.873, 'Богуслав'),
-  'рокітн': (49.689, 30.475, 'Рокитне'),
-  'рокитн': (49.689, 30.475, 'Рокитне'),
-  'таращ': (49.562, 30.505, 'Тараща'),
-  'сквир': (49.731, 29.664, 'Сквира'),
-  'тітіїв': (49.366, 29.688, 'Тетіїв'),
-  'тетіїв': (49.366, 29.688, 'Тетіїв'),
-  'переяслав': (50.076, 31.455, 'Переяслав'),
-  'яготин': (50.256, 31.782, 'Яготин'),
-  'березан': (50.307, 31.472, 'Березань'),
-  'баришівк': (50.354, 31.320, 'Баришівка'),
-  'бориспіль': (50.354, 30.956, 'Бориспіль'),
-  'бориспол': (50.354, 30.956, 'Бориспіль'),
-  'бориспл': (50.354, 30.956, 'Бориспіль'),
-  'борісп': (50.354, 30.956, 'Бориспіль'),
-  'броварськ': (50.511, 30.790, 'Броварський р-н'),
-  'обухівськ': (50.117, 30.630, 'Обухівський р-н'),
-  'фастівськ': (50.081, 29.914, 'Фастівський р-н'),
-  'бучанськ': (50.547, 30.222, 'Бучанський р-н'),
-  'вишгородськ': (50.584, 30.488, 'Вишгородський р-н'),
-  'білоцерківськ': (49.795, 30.116, 'Білоцерківський р-н'),
-  'щаслив': (50.379, 30.803, 'Щасливе'),
-  'проліск': (50.391, 30.780, 'Проліски'),
-  'гора': (50.369, 30.862, 'Гора'),
-  'чубинськ': (50.381, 30.849, 'Чубинське'),
-  'княжич': (50.461, 30.783, 'Княжичі'),
-  'требух': (50.483, 30.896, 'Требухів'),
-  'красил': (50.448, 30.942, 'Красилівка'),
-  'гоголів': (50.517, 30.982, 'Гоголів'),
-  'велика димерк': (50.592, 30.914, 'Велика Димерка'),
-  'димерк': (50.592, 30.914, 'Велика Димерка'),
-  'калита': (50.751, 31.026, 'Калита'),
-  'вороньків': (50.219, 30.898, 'Вороньків'),
-  'процева': (50.236, 30.789, 'Проців'),
-  'проців': (50.236, 30.789, 'Проців'),
-  'гнідин': (50.331, 30.713, 'Гнідин'),
-  'вишеньк': (50.298, 30.686, 'Вишеньки'),
-  'бровар': (50.511, 30.790, 'Бровари'),
-  'зазим': (50.569, 30.685, 'Зазим\'я'),
-  'погреб': (50.546, 30.642, 'Погреби'),
-  'пухівк': (50.606, 30.716, 'Пухівка'),
-  'літки': (50.669, 30.753, 'Літки'),
-  'вишгород': (50.584, 30.488, 'Вишгород'),
-  'море': (50.680, 30.450, 'Київське море'),
-  'водосховище': (50.680, 30.450, 'Київське море'),
-  'київське море': (50.680, 30.450, 'Київське море'),
-  'хотянівк': (50.612, 30.562, 'Хотянівка'),
-  'новосілк': (50.354, 30.462, 'Новосілки'),
-  'петрівц': (50.629, 30.435, 'Нові Петрівці'),
-  'лютіж': (50.684, 30.395, 'Лютіж'),
-  'димер': (50.781, 30.301, 'Димер'),
-  'іванків': (50.934, 29.897, 'Іванків'),
-  'іванков': (50.934, 29.897, 'Іванків'),
-  
-    'фурси': (49.771, 29.967, 'Фурси'),
-    'вільшанк': (49.715, 30.046, 'Мала Вільшанка'),
-    'бакал': (49.791, 30.026, 'Бакали'),
-    'володарк': (49.525, 29.919, 'Володарка'),
-    'дмитрівк': (50.457, 30.019, 'Дмитрівка'),
-    'петрашівк': (49.764, 30.076, 'Петрашівка'),
-  'славутич': (51.517, 30.763, 'Славутич'),
-  'дзвінков': (50.252, 30.075, 'Дзвінкове'),
-  'немішаєв': (50.563, 30.091, 'Немішаєве'),
-  'клавдієв': (50.583, 30.008, 'Клавдієво-Тарасове'),
-  'пісківк': (50.706, 29.595, 'Пісківка'),
-  'чзв': (51.276, 30.222, 'Чорнобильська ЗВ'),
-  'чорнобил': (51.276, 30.222, 'Чорнобильська ЗВ'),
-  'прип\'ят': (51.404, 30.054, 'Прип\'ять'),
-  'ксаверівк': (50.046, 30.217, 'Ксаверівка'),
-  'пшеничн': (50.093, 30.205, 'Пшеничне'),
-  'митниц': (50.129, 30.243, 'Митниця'),
-  'устимівк': (49.958, 30.022, 'Устимівка'),
-  'гребінк': (49.956, 30.171, 'Гребінки'),
-  'солтанівк': (50.171, 30.198, 'Велика Солтанівка'),
-  'хлепч': (50.188, 30.181, 'Хлепча'),
-  'багрин': (50.217, 30.213, 'Багрин'),
-  'плесецьк': (50.221, 30.109, 'Плесецьке'),
-  'забір\'я': (50.321, 30.217, 'Забір\'я'),
-  'забірʼя': (50.321, 30.217, 'Забір\'я'),
-  'горенк': (50.557, 30.318, 'Горенка'),
-  'катюжанк': (50.804, 30.133, 'Катюжанка'),
-  'страхолісс': (51.077, 30.394, 'Страхолісся'),
-  'вася': (50.178, 30.316, 'Васильків'),
-  'столиц': (50.450, 30.523, 'Київ (Столиця)'),
-  'басан': (50.565, 31.511, 'Нова Басань'),
-  'згурівк': (50.490, 31.780, 'Згурівка'),
-  'кіпті': (51.056, 31.151, 'Кіпті'),
-  'козелец': (50.916, 31.119, 'Козелець'),
-  'остер': (50.950, 30.880, 'Остер'),
-  'почайн': (50.497, 30.518, 'Почайна'),
-  'високе': (50.600, 31.230, 'Високе'),
-  'столоц': (50.450, 30.523, 'Київ (Столиця)'),
-  'боря': (50.354, 30.956, 'Бориспіль'),
-  'борік': (50.354, 30.956, 'Бориспіль'),
-  'борик': (50.354, 30.956, 'Бориспіль'),
-  'рогозів': (50.243, 31.050, 'Рогозів'),
-  'артемівк': (50.313, 31.026, 'Артемівка'),
-
-  // Додано з повідомлень каналів
-  'вєнік': (50.511, 30.419, 'Виноградар'),
-  'венік': (50.511, 30.419, 'Виноградар'),
-  'летовище': (50.401, 30.451, 'Аеропорт Жуляни'),
-  'кардачі': (50.441, 30.445, 'Караваєві Дачі'),
-  'борщага': (50.418, 30.367, 'Борщагівка'),
-  'чоколівк': (50.432, 30.456, 'Чоколівка'),
-  'батиєв': (50.428, 30.495, 'Батиєва гора'),
-  'черепанов': (50.433, 30.520, 'Черепанова гора'),
-  'липки': (50.443, 30.536, 'Липки'),
-  'клов': (50.438, 30.540, 'Клов'),
-  'мишоловк': (50.377, 30.532, 'Мишоловка'),
-  'совки': (50.412, 30.472, 'Совки'),
-  'протасів': (50.424, 30.502, 'Протасів Яр'),
-  'байков': (50.418, 30.511, 'Байкове'),
-  'нова забудов': (50.432, 30.512, 'Нова Забудова'),
-  'євбаз': (50.447, 30.495, 'Галицька пл. (Євбаз)'),
-  'зоопарк': (50.455, 30.465, 'КПІ / Зоопарк'),
-  'політех': (50.450, 30.466, 'КПІ'),
-  'дубки': (50.478, 30.418, 'Сирець (Дубки)'),
-  'мостицьк': (50.505, 30.433, 'Мостицький масив'),
-  'сирецьк': (50.488, 30.445, 'Сирецька'),
-  'водогін': (50.556, 30.464, 'Водогін'),
-  'міністерк': (50.542, 30.475, 'Озеро Міністерка'),
-  'дамба': (50.588, 30.512, 'Вишгородська дамба'),
-  'муромець': (50.505, 30.544, 'Парк Муромець'),
-  'рибальськ': (50.475, 30.530, 'Рибальський острів'),
-  'тец 6': (50.533, 30.663, 'ТЕЦ-6'),
-  'русанівські сади': (50.465, 30.582, 'Русанівські сади'),
-  'нижні сади': (50.365, 30.605, 'Осокорки (Нижні сади)'),
-  'патона': (50.427, 30.582, 'Міст Патона'),
-  'ретровіл': (50.503, 30.417, 'ТРЦ Retroville'),
-  'республік': (50.374, 30.448, 'ТРЦ Respublika'),
-  'іподром': (50.378, 30.468, 'Іподром'),
-  'одеська пл': (50.372, 30.457, 'Одеська площа'),
-  'волинськ': (50.416, 30.433, 'Пост Волинський'),
-  'столичн': (50.365, 30.535, 'Столичне шосе'),
-  'осещин': (50.578, 30.533, 'Осещина'),
-  'рожівк': (50.568, 30.742, 'Рожівка'),
-  'залісс': (50.662, 30.865, 'Парк Залісся'),
-  'скибин': (50.565, 30.835, 'Скибин'),
-  'луб\'янк': (50.652, 30.174, 'Луб\'янка'),
-  'озера': (50.618, 30.208, 'Озера'),
-  'демидів': (50.718, 30.335, 'Демидів'),
-  'козарович': (50.768, 30.362, 'Козаровичі'),
-  'глібівк': (50.808, 30.365, 'Глібівка'),
-  'сухолучч': (50.945, 30.435, 'Сухолуччя'),
-  'дитяток': (51.115, 30.145, 'Дитятки'),
-  'дитятки': (51.115, 30.145, 'Дитятки'),
-  'оране': (51.055, 30.125, 'Оране'),
-  'крячк': (50.210, 30.270, 'Крячки'),
-  'путрівк': (50.211, 30.264, 'Путрівка'),
-  'залізн': (50.228, 30.342, 'Залізне'),
-  'борисів': (50.205, 30.352, 'Борисів'),
-  'кодак': (50.098, 30.309, 'Кодаки'),
-  'барахт': (50.122, 30.382, 'Барахти'),
-  'погреби васильків': (50.142, 30.422, 'Погреби (Васильків)'),
-  'святопетрівськ': (50.385, 30.325, 'Святопетрівське'),
-  'білогородк': (50.395, 30.231, 'Білогородка'),
-  'горенич': (50.422, 30.208, 'Гореничі'),
-  'шпитьк': (50.418, 30.125, 'Шпитьки'),
-  'петрушк': (50.432, 30.165, 'Петрушки'),
-  'бобриц': (50.345, 30.192, 'Бобриця'),
-  'музич': (50.362, 30.118, 'Музичі'),
-  'малютянк': (50.298, 30.258, 'Малютянка'),
-  'мархалівк': (50.265, 30.362, 'Мархалівка'),
-  'віта': (50.312, 30.388, 'Віта-Поштова'),
-  'мощун': (50.555, 30.195, 'Мощун'),
-  'лавін': (50.395, 30.447, 'Лавіна Молл'),
-  'лівий берег': (50.430, 30.610, 'Лівий берег'),
-  'правобережж': (50.440, 30.480, 'Правобережжя'),
-
-  // Населені пункти Київщини та вектори виходу на сусідні області
-  'заворич': (50.704, 31.132, 'Заворичі'),
-  'калинівка бровар': (50.562, 30.865, 'Калинівка (Бровари)'),
-  'богдан': (50.625, 30.915, 'Богданівка'),
-  'медвин': (49.395, 30.785, 'Медвин'),
-  'бовкун': (49.615, 30.585, 'Бовкун'),
-  'карапиш': (49.705, 30.655, 'Карапиші'),
-  'ясногородк': (50.352, 30.038, 'Ясногородка'),
-  'бишів': (50.264, 29.914, 'Бишів'),
-  'поліськ': (51.242, 29.395, 'Поліське'),
-  'горностайпіл': (51.072, 30.252, 'Горностайпіль'),
-  'житомирщин': (50.720, 29.220, 'Житомирщина (Захід)'),
-  'житомирськ': (50.720, 29.220, 'Житомирщина (Захід)'),
-  'житомир': (50.254, 28.658, 'Житомир'),
-  'малин': (50.768, 29.245, 'Малин (Житомирщина)'),
-  'коростень': (50.952, 28.648, 'Коростень (Житомирщина)'),
-  'радомишл': (50.495, 29.235, 'Радомишль (Житомирщина)'),
-  'овруч': (51.325, 28.805, 'Овруч (Житомирщина)'),
-  'чернігівщин': (51.150, 31.100, 'Чернігівщина (Північ)'),
-  'черкащин': (49.450, 31.300, 'Черкащина (Південь)'),
-  'вінниччин': (49.400, 29.300, 'Вінниччина (Пд-Захід)'),
-  'полтавщин': (50.050, 32.200, 'Полтавщина (Схід)'),
-
-  // Північ та Вишгородський/Чорнобильський напрямок
-  'стещин': (51.108, 30.088, 'Стещино'),
-  'овдієва': (50.985, 30.312, 'Овдієва Нива'),
-  'любимівк': (50.742, 30.258, 'Любимівка'),
-  'рови': (50.875, 30.315, 'Рови'),
-  'круги': (50.855, 30.295, 'Круги'),
-  'рикун': (50.815, 30.295, 'Рикунь'),
-  'гуту-межигірськ': (50.655, 30.325, 'Гута-Межигірська'),
-  'гута': (50.655, 30.325, 'Гута-Межигірська'),
-  'синяк': (50.678, 30.268, 'Синяк'),
-  'раківк': (50.652, 30.245, 'Раківка'),
-  'воропаївк': (50.915, 30.015, 'Воропаївка'),
-  'кухарі': (50.815, 29.595, 'Кухарі'),
-  'зорин': (51.055, 30.185, 'Зорин'),
-  'вахівк': (50.935, 30.195, 'Вахівка'),
-  'зимовищ': (51.425, 30.195, 'Зимовище'),
-  'коленц': (50.925, 29.925, 'Коленці'),
-
-  // Захід та Бучанський/Макарівський напрямок
-  'бабинц': (50.682, 29.985, 'Бабинці'),
-  'мирча': (50.745, 29.835, 'Мирча'),
-  'качали': (50.685, 29.845, 'Качали'),
-  'загальц': (50.672, 29.805, 'Загальці'),
-  'нова гребля': (50.595, 29.875, 'Нова Гребля'),
-  'вабля': (50.625, 29.905, 'Вабля'),
-  'дружня': (50.622, 29.965, 'Дружня'),
-  'плахтянк': (50.535, 29.945, 'Плахтянка'),
-  'андріївк': (50.552, 29.835, 'Андріївка'),
-  'личанк': (50.405, 30.105, 'Личанка'),
-  'бузов': (50.415, 30.042, 'Бузова'),
-  'неграш': (50.375, 30.145, 'Неграші'),
-  'гурівщин': (50.428, 30.095, 'Гурівщина'),
-  'мрію': (50.432, 30.118, 'Мрія (Житомирська траса)'),
-  'кодра': (50.595, 29.555, 'Кодра'),
-
-  // Південь та Васильківський/Обухівський/Кагарлицький напрямок
-  'степок': (49.985, 30.425, 'Степок'),
-  'ленди': (50.065, 30.555, 'Ленди'),
-  'слобідк': (50.095, 30.585, 'Черняхівська Слобідка'),
-  'тростинк': (50.045, 30.395, 'Тростинка'),
-  'кулібаб': (50.162, 30.285, 'Кулібаба'),
-  'застугн': (50.185, 30.295, 'Застугна'),
-  'кожухівк': (50.252, 30.242, 'Кожухівка'),
-  'здорівк': (50.218, 30.248, 'Здорівка'),
-  'дібров': (50.205, 30.215, 'Діброва'),
-  'руликів': (50.125, 30.185, 'Руликів'),
-  'рославич': (50.232, 30.445, 'Рославичі'),
-  'гвоздів': (50.248, 30.482, 'Гвоздів'),
-  'кренич': (50.245, 30.525, 'Креничі'),
-  'дмитрович': (50.195, 30.545, 'Дмитровичі'),
-  'безрадич': (50.175, 30.555, 'Нові/Старі Безрадичі'),
-  'гудимов': (50.085, 30.525, 'Гудимове'),
-  'шевенківк': (50.025, 30.465, 'Шевченківка'),
-  'копачів': (50.098, 30.488, 'Копачів'),
-  'велика бугаївк': (50.228, 30.415, 'Велика Бугаївка'),
-  'бугаївк': (50.228, 30.415, 'Велика Бугаївка'),
-  'землянк': (49.725, 30.545, 'Землянка'),
-  'ромашки': (49.728, 30.602, 'Ромашки'),
-  'бакумівк': (49.718, 30.625, 'Бакумівка'),
-  'острійки': (49.775, 30.295, 'Острійки'),
-  'бендюгівк': (49.915, 30.715, 'Бендюгівка'),
-  'стави': (49.855, 30.725, 'Стави'),
-  'розаліївк': (49.895, 30.355, 'Розаліївка'),
-  'лютарі': (49.625, 30.825, 'Лютарі'),
-  'телешівк': (49.685, 30.585, 'Телешівка'),
-  'шпендівк': (49.785, 30.685, 'Шпендівка'),
-  'запрудд': (49.735, 30.685, 'Запруддя'),
-  'мирівк': (49.925, 30.785, 'Мирівка'),
-  'матяшівк': (50.005, 30.635, 'Матяшівка'),
-  'григорівк': (50.045, 30.625, 'Григорівка'),
-  'ісайки': (49.515, 30.785, 'Ісайки'),
-  'дмитренк': (49.465, 30.815, 'Дмитренки'),
-
-  // Південний сектор Київщини (Ставище, Васильків, Обухів, Фастів, Рокитне, Богуслав)
-  'ставищ': (49.3904, 30.1912, 'Ставище'),
-  'красне': (49.9178, 30.4236, 'Красне'),
-  'германівк': (50.1032, 30.5634, 'Германівка'),
-  'острів': (49.6644, 30.3956, 'Острів'),
-  'синяв': (49.6698, 30.4851, 'Синява'),
-  'ольшаниц': (49.6738, 30.6389, 'Ольшаниця'),
-  'саварк': (49.5442, 30.7328, 'Саварка'),
-  'дибинц': (49.5218, 30.7789, 'Дибинці'),
-  'розкішн': (49.3855, 30.1876, 'Розкішна'),
-  'кожанк': (49.9682, 29.7612, 'Кожанка'),
-  'малополовецьк': (49.8984, 29.8142, 'Малополовецьке'),
-  'томашівк': (50.1864, 29.8172, 'Томашівка'),
-  'дідівщин': (50.1472, 29.7741, 'Дідівщина'),
-
-  // Північний сектор (Вишгородщина / русло Десни)
-  'пірнов': (50.7512, 30.6723, 'Пірнове'),
-  'воропаєв': (50.7251, 30.6478, 'Воропаїв'),
-  'жукин': (50.8178, 30.6892, 'Жукин'),
-  'сувид': (50.8872, 30.7314, 'Сувид'),
-  'рожн': (50.6554, 30.7391, 'Рожни'),
-  'семиполк': (50.7231, 30.9382, 'Семиполки'),
-  'плоске': (50.5481, 31.1072, 'Плоске'),
-
-  // Східний сектор (Бориспільщина / Баришівщина / Переяславщина)
-  'глибок': (50.2694, 30.9632, 'Глибоке'),
-  'головурів': (50.1832, 30.9854, 'Головурів'),
-  'сошників': (50.1341, 31.1192, 'Сошників'),
-  'старе': (50.1362, 31.0664, 'Старе'),
-  'мирне': (50.2974, 31.2461, 'Мирне'),
-  'семенівк': (50.3152, 31.4234, 'Семенівка'),
-  'лехнівк': (50.3741, 31.5472, 'Лехнівка'),
-  'дівичк': (50.0832, 31.2984, 'Дівички'),
-  'цибл': (49.9572, 31.5641, 'Циблі'),
-  'хоцьк': (49.9231, 31.6912, 'Хоцьки'),
-  'ташань': (50.0521, 31.8362, 'Ташань'),
-
-  // Західний сектор (Макарівщина / Бучанщина)
-  'липівк': (50.5182, 29.8054, 'Липівка'),
-  'мотижин': (50.4132, 29.9884, 'Мотижин'),
-  'колонщин': (50.4491, 29.9621, 'Колонщина'),
-  'копилів': (50.4072, 29.8974, 'Копилів'),
-  'микулич': (50.5662, 30.1341, 'Микуличі'),
-  'блиставиц': (50.6032, 30.1874, 'Блиставиця'),
-  'гаврилівк': (50.6692, 30.2241, 'Гаврилівка'),
-
-  // Орієнтири та масиви Києва
-  'дорогожич': (50.4735, 30.4492, 'Дорогожичі'),
-  'вітряні гор': (50.5052, 30.4452, 'Вітряні Гори'),
-  'лиса гор': (50.3952, 30.5484, 'Лиса гора'),
-  'чорна гор': (50.4124, 30.5372, 'Чорна гора'),
-
-  // Схід та лівобережжя
-  'гостролучч': (50.435, 31.295, 'Гостролуччя'),
-  'мала стариц': (50.455, 31.155, 'Мала Стариця'),
-  'олександрівк': (50.392, 30.892, 'Олександрівка (Бориспіль)'),
-  'олександрівки': (50.392, 30.892, 'Велика/Мала Олександрівка'),
-  'мала олександрівк': (50.398, 30.858, 'Мала Олександрівка'),
-  'велика олександрівк': (50.392, 30.892, 'Велика Олександрівка'),
-  'велику олександрівк': (50.392, 30.892, 'Велика Олександрівка'),
-
-  // Північно-східний ракетний коридор (Чернігівщина / Прилуцький напрямок)
-  'прилук': (50.590, 32.385, 'Прилуки'),
-  'бобровиц': (50.745, 31.388, 'Бобровиця'),
-  'ніжин': (51.048, 31.886, 'Ніжин'),
-  'носівк': (50.930, 31.580, 'Носівка'),
-  'ічня': (50.862, 32.392, 'Ічня'),
-  'пирятин': (50.240, 32.500, 'Пирятин'),
-  'лубни': (50.016, 32.996, 'Лубни'),
-  'золотонош': (49.668, 32.035, 'Золотоноша'),
-  'канів': (49.750, 31.460, 'Канів'),
-  'корсунь': (49.420, 31.270, 'Корсунь-Шевченківський'),
-  'мрин': (51.055, 31.525, 'Мрин'),
-  'вертіївк': (51.165, 31.845, 'Вертіївка'),
-  'мала дівиц': (50.705, 32.165, 'Мала Дівиця'),
-  'линовиц': (50.475, 32.405, 'Линовиця'),
-
-  // Додаткові сленгові скорочення Києва
-  'петропавлівк': (50.435, 30.340, 'Петропавлівська Борщагівка'),
-  'південну борщагівк': (50.408, 30.395, 'Південна Борщагівка'),
-  'софіївк': (50.410, 30.366, 'Софіївська Борщагівка'),
-  'заспа': (50.303, 30.575, 'Конча-Заспа'),
-  'шухевич': (50.495, 30.568, 'просп. Шухевича'),
-  'майдан незалежност': (50.450, 30.523, 'Майдан Незалежності'),
-  'лісове кладовищ': (50.498, 30.635, 'Лісове кладовище'),
-  'файна': (50.474, 30.405, 'ЖК Файна Таун'),
-  'комфорт': (50.435, 30.622, 'ЖК Комфорт Таун'),
-  'епіцентр боярка': (50.342, 30.325, 'Боярка (Епіцентр)'),
-
-  // Часті одруківки каналів
-  'береовец': (50.490, 30.370, 'Берковець'),
-  'берервец': (50.490, 30.370, 'Берковець'),
-  'куркнівк': (50.489, 30.464, 'Куренівка'),
-  'страхолвсс': (51.077, 30.394, 'Страхолісся'),
-  'карариш': (49.705, 30.655, 'Карапиші'),
-  'тромтинк': (50.045, 30.395, 'Тростинка'),
-  'бархат': (50.122, 30.382, 'Барахти'),
-  'гаоздів': (50.248, 30.482, 'Гвоздів'),
-  'лівобережк': (50.451, 30.598, 'Лівобережна'),
-
-  // Пускові майданчики балістики та авіації
-  'курськ': (51.7308, 36.1930, 'Курськ (Пуск)'),
-  'брянськ': (53.2435, 34.3639, 'Брянськ (Пуск)'),
-  'бєлгород': (50.5997, 36.5982, 'Бєлгород (Пуск)'),
-  'белгород': (50.5997, 36.5982, 'Бєлгород (Пуск)'),
-  'воронеж': (51.6607, 39.2002, 'Воронеж (Пуск)'),
-  'орел': (52.9707, 36.0643, 'Орел (Пуск)'),
-  'орл': (52.9707, 36.0643, 'Орел (Пуск)'),
-  'крим': (45.7089, 34.3933, 'Крим (Пуск)'),
-  'чауд': (45.0000, 35.8333, 'Чауда (Пуск)'),
-  'приморсько-ахтарськ': (46.0464, 38.1749, 'Приморсько-Ахтарськ (Пуск)'),
-  'єйськ': (46.7118, 38.2758, 'Єйськ (Пуск)'),
-  'енгельс': (51.4833, 46.1167, 'Енгельс (Пуск)'),
-  'ахтубінськ': (48.2882, 46.1667, 'Ахтубінськ (Пуск)'),
-  'саваслейк': (55.4578, 42.3167, 'Саваслейка (Пуск)'),
-  'олень': (68.1500, 33.4667, 'Оленья (Пуск)'),
-  'каспій': (43.0, 50.0, 'Каспій (Пуск)'),
-  'мозир': (52.0495, 29.2559, 'Мозир (Пуск)'),
-  'гомел': (52.4345, 30.9754, 'Гомель (Пуск)'),
-  'тул': (54.1930, 37.6190, 'Тула (Пуск)'),
-  'ростов': (47.2313, 39.7233, 'Ростов (Пуск)'),
-};
-
-
-int getThreatTtlSeconds(String rawType, {bool isExitingOblast = false}) {
-  if (isExitingOblast) return 45;
-  switch (rawType) {
-    case 'missile_ballistic':
-    case 'missile_hypersonic':
-      return 120;
-    case 'missile_cruise':
-    case 'missile_supersonic':
-    case 'kab':
-      return 180;
-    case 'shahed':
-    case 'shahed_jet':
-    case 'uav_guided':
-    case 'uav_recon':
-    case 'uav_decoy':
-    default:
-      return 300;
-  }
-}
-
-Map<String, (double, double, String)> _kKyivLocations = Map.of(_kBaseKyivLocations);
-Map<String, (double, double, String)> _learnedLocations = {};
-final Set<String> _pendingOrFailedGeocodes = {};
-VoidCallback? _onNewLocationLearned;
-
-String stemLocationCandidate(String word) {
-  var lower = word.toLowerCase();
-  const vowels = {'а', 'я', 'у', 'ю', 'і', 'и', 'о', 'е'};
-  if (lower.length >= 6 && vowels.contains(lower[lower.length - 1])) {
-    lower = lower.substring(0, lower.length - 1);
-  }
-  return lower;
-}
-
-const _kLocationStopWords = <String>{
-  'київщина', 'київська', 'київ', 'увага', 'тривога', 'шахед', 'шахеди', 'шахеда',
-  'ракета', 'ракети', 'балістика', 'північ', 'південь', 'захід', 'схід',
-  'дніпро', 'україна', 'область', 'області', 'район', 'району', 'сектор',
-  'напрямок', 'напрямку', 'вектор', 'курс', 'пуски', 'виходи', 'збиття',
-  'відбій', 'чисто', 'повітряна', 'небезпека', 'група', 'групи', 'ціль', 'цілі'
-};
-
-Future<void> _loadLearnedLocations() async {
-  try {
-    final file = await _getAppStorageFile('learned_locations.json');
-    if (file != null && await file.exists()) {
-      if (await file.length() > 524288) return;
-      final content = await file.readAsString();
-      final Map<String, dynamic> data = json.decode(content);
-      int count = 0;
-      for (final entry in data.entries) {
-        if (count >= 300) break;
-        final keyStr = entry.key.trim().toLowerCase();
-        if (keyStr.length < 3 || keyStr.length > 35) continue;
-        final val = entry.value;
-        if (val is Map) {
-          final lat = (val['lat'] as num?)?.toDouble();
-          final lon = (val['lon'] as num?)?.toDouble();
-          final rawName = (val['name'] ?? keyStr).toString();
-          final cleanName = rawName.replaceAll(RegExp(r'<[^>]*>'), '').replaceAll(RegExp(r'[\r\n\t]'), ' ').trim();
-          final safeName = cleanName.length > 40 ? cleanName.substring(0, 40) : cleanName;
-          if (lat != null && lon != null) {
-            if (lat >= 49.1 && lat <= 51.6 && lon >= 29.2 && lon <= 32.2) {
-              _learnedLocations[keyStr] = (lat, lon, safeName);
-              _kKyivLocations[keyStr] = (lat, lon, safeName);
-              count++;
-            }
-          }
-        }
-      }
-    }
-  } catch (_) {}
-}
-
-Future<void> _saveLearnedLocations() async {
-  try {
-    final file = await _getAppStorageFile('learned_locations.json');
-    if (file != null) {
-      final Map<String, dynamic> out = {};
-      for (final e in _learnedLocations.entries) {
-        out[e.key] = {
-          'lat': e.value.$1,
-          'lon': e.value.$2,
-          'name': e.value.$3,
-        };
-      }
-      await file.writeAsString(json.encode(out));
-    }
-  } catch (_) {}
-}
-
-Future<void> _autoGeocodeLocation(String rawWord, String stem) async {
-  try {
-    if (stem.length < 3 || stem.length > 35 || _learnedLocations.length >= 300) return;
-    final uri = Uri.parse(
-      'https://nominatim.openstreetmap.org/search?format=json&q=${Uri.encodeComponent("$rawWord, Київська область")}&viewbox=29.2,51.6,32.2,49.1&bounded=1&limit=1&accept-language=uk'
-    );
-    final response = await http.get(uri, headers: {
-      'User-Agent': 'ua.kyiv.alert.monitor/1.0 (contact: admin@kyivalert.ua)',
-    }).timeout(const Duration(seconds: 4));
-
-    if (response.statusCode == 200) {
-      final list = json.decode(response.body);
-      if (list is List && list.isNotEmpty) {
-        final item = list[0] as Map<String, dynamic>;
-        final lat = double.tryParse(item['lat']?.toString() ?? '');
-        final lon = double.tryParse(item['lon']?.toString() ?? '');
-        if (lat != null && lon != null) {
-          if (lat >= 49.1 && lat <= 51.6 && lon >= 29.2 && lon <= 32.2 && _learnedLocations.length < 300) {
-            final rawDisplay = item['display_name']?.toString().split(',')[0].trim() ?? rawWord;
-            final cleanName = rawDisplay.replaceAll(RegExp(r'<[^>]*>'), '').replaceAll(RegExp(r'[\r\n\t]'), ' ').trim();
-            final safeName = cleanName.length > 40 ? cleanName.substring(0, 40) : cleanName;
-            _learnedLocations[stem] = (lat, lon, safeName);
-            _kKyivLocations[stem] = (lat, lon, safeName);
-            await _saveLearnedLocations();
-            _onNewLocationLearned?.call();
-          }
-        }
-      }
-    }
-  } catch (_) {}
-}
-
-void _checkAndAutoGeocodeLocations(String text) {
-  if (_learnedLocations.length >= 300) return;
-  final candidateRegex = RegExp(
-    r'(?:на|через|біля|поблизу|район[іу]?|повз|від|з|із|в бік|у бік|курсом на|вектор на)\s+([А-ЯІЇЄҐ][а-яіїєґ\x27ʼ\-]{3,35})'
-  );
-  for (final m in candidateRegex.allMatches(text)) {
-    final rawWord = m.group(1);
-    if (rawWord == null) continue;
-    final rawLower = rawWord.toLowerCase();
-    if (_kLocationStopWords.contains(rawLower)) continue;
-    final stem = stemLocationCandidate(rawWord);
-    if (stem.length < 3 || stem.length > 35) continue;
-    if (!_kKyivLocations.containsKey(stem) && !_pendingOrFailedGeocodes.contains(stem)) {
-      _pendingOrFailedGeocodes.add(stem);
-      _autoGeocodeLocation(rawWord, stem);
-      break; // Максимум 1 нове геокодування за один прохід для захисту від бану Nominatim (1 запит/сек)
-    }
-  }
-}
-List<String> _dynamicExtraChannels = [];
-List<String> _dynamicDangerKeywords = [];
-List<String> _dynamicClearKeywords = [];
-
-const int kCurrentVersionCode = 20;
-const String kCurrentVersionName = '1.2.17';
-
-class RemoteConfig {
-  final int versionCode;
-  final String versionName;
-  final String apkUrl;
-  final String changelog;
-  final Map<String, (double, double, String)> extraLocations;
-  final List<String> extraChannels;
-  final List<String> extraDangerKeywords;
-  final List<String> extraClearKeywords;
-
-  const RemoteConfig({
-    this.versionCode = kCurrentVersionCode,
-    this.versionName = kCurrentVersionName,
-    this.apkUrl = '',
-    this.changelog = '',
-    this.extraLocations = const {},
-    this.extraChannels = const [],
-    this.extraDangerKeywords = const [],
-    this.extraClearKeywords = const [],
-  });
-
-  factory RemoteConfig.fromJson(Map<String, dynamic> json) {
-    final Map<String, (double, double, String)> locations = {};
-    if (json['extra_locations'] is Map) {
-      (json['extra_locations'] as Map).forEach((k, v) {
-        final keyStr = k.toString().toLowerCase().trim();
-        if (keyStr.length >= 3 && keyStr.length <= 35 && v is Map && v['lat'] != null && v['lon'] != null) {
-          final lat = (v['lat'] as num).toDouble();
-          final lon = (v['lon'] as num).toDouble();
-          if (lat >= 48.0 && lat <= 53.0 && lon >= 28.0 && lon <= 34.0) {
-            final rawName = (v['name'] ?? k).toString();
-            final cleanName = rawName.replaceAll(RegExp(r'<[^>]*>'), '').replaceAll(RegExp(r'[\r\n\t]'), ' ').trim();
-            final safeName = cleanName.length > 40 ? cleanName.substring(0, 40) : cleanName;
-            locations[keyStr] = (lat, lon, safeName);
-          }
-        }
-      });
-    }
-
-    final channelRegex = RegExp(r'^[a-zA-Z0-9_]{4,32}$');
-    final List<String> channels = (json['extra_channels'] as List?)
-            ?.map((e) => e.toString().trim())
-            .where((ch) => channelRegex.hasMatch(ch))
-            .take(5)
-            .toList() ??
-        const [];
-
-    final List<String> dangerKws = (json['extra_danger_keywords'] as List?)
-            ?.map((e) => e.toString().trim())
-            .where((kw) => kw.length >= 3 && kw.length <= 40)
-            .take(30)
-            .toList() ??
-        const [];
-
-    final List<String> clearKws = (json['extra_clear_keywords'] as List?)
-            ?.map((e) => e.toString().trim())
-            .where((kw) => kw.length >= 3 && kw.length <= 40)
-            .take(30)
-            .toList() ??
-        const [];
-
-    return RemoteConfig(
-      versionCode: (json['version_code'] as num?)?.toInt() ?? kCurrentVersionCode,
-      versionName: json['version_name']?.toString() ?? kCurrentVersionName,
-      apkUrl: json['apk_url']?.toString() ?? '',
-      changelog: json['changelog']?.toString() ?? '',
-      extraLocations: locations,
-      extraChannels: channels,
-      extraDangerKeywords: dangerKws,
-      extraClearKeywords: clearKws,
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    final Map<String, dynamic> locs = {};
-    extraLocations.forEach((k, v) {
-      locs[k] = {'lat': v.$1, 'lon': v.$2, 'name': v.$3};
-    });
-    return {
-      'version_code': versionCode,
-      'version_name': versionName,
-      'apk_url': apkUrl,
-      'changelog': changelog,
-      'extra_locations': locs,
-      'extra_channels': extraChannels,
-      'extra_danger_keywords': extraDangerKeywords,
-      'extra_clear_keywords': extraClearKeywords,
-    };
-  }
-}
 
 class RemoteConfigNotifier extends Notifier<RemoteConfig> {
   Timer? _refreshTimer;
@@ -1237,57 +365,6 @@ final remoteConfigProvider = NotifierProvider<RemoteConfigNotifier, RemoteConfig
   return RemoteConfigNotifier();
 });
 
-String cleanHtmlString(String html, {int maxLength = 600}) {
-  final maxSafe = math.max(maxLength + 500, 4000);
-  final safeHtml = html.length > maxSafe ? html.substring(0, maxSafe) : html;
-  var text = safeHtml.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
-  text = text.replaceAll(RegExp(r'<[^>]+>'), '');
-  text = text
-      .replaceAll('&quot;', '"')
-      .replaceAll('&amp;', '&')
-      .replaceAll('&lt;', '<')
-      .replaceAll('&gt;', '>')
-      .replaceAll('&nbsp;', ' ')
-      .replaceAll('&apos;', "'")
-      .replaceAll('&#39;', "'")
-      .replaceAll('&#33;', '!')
-      .replaceAll('&laquo;', '«')
-      .replaceAll('&raquo;', '»')
-      .replaceAll('&ndash;', '–')
-      .replaceAll('&mdash;', '—')
-      .replaceAll('&hellip;', '…')
-      .replaceAll('&rsquo;', '’')
-      .replaceAll('&lsquo;', '‘')
-      .replaceAll('&rdquo;', '”')
-      .replaceAll('&ldquo;', '“');
-  text = text.replaceAllMapped(RegExp(r'&#(\d+);'), (m) {
-    final code = int.tryParse(m.group(1)!);
-    return (code != null && code > 0 && code <= 0x10FFFF) ? String.fromCharCode(code) : m.group(0)!;
-  });
-  text = text.replaceAllMapped(RegExp(r'&#x([0-9a-fA-F]+);'), (m) {
-    final code = int.tryParse(m.group(1)!, radix: 16);
-    return (code != null && code > 0 && code <= 0x10FFFF) ? String.fromCharCode(code) : m.group(0)!;
-  });
-  // Видаляємо невидимі керівні та zero-width символи (захист від prompt/text injection)
-  text = text.replaceAll(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200B-\u200F\uFEFF]'), '');
-  text = text.replaceAll(RegExp(r'http\S+'), '');
-  text = text.replaceAll(RegExp(r'@\w+'), '');
-
-  const adMarkers = ['підписатись', 'наш резерв', 'надіслати новину', 'джерело', 'більше новин', 'реклама', 'зв\'язок з', 'підписка'];
-  final cleanLines = <String>[];
-  for (final line in text.split('\n')) {
-    final lower = line.toLowerCase();
-    if (adMarkers.any((m) => lower.contains(m))) continue;
-    if (line.trim().isNotEmpty) cleanLines.add(line.trim());
-  }
-  final joined = cleanLines.join('\n');
-  if (joined.length <= maxLength) return joined;
-  final lastSpace = joined.lastIndexOf(' ', maxLength);
-  final minThreshold = maxLength > 100 ? maxLength - 100 : maxLength;
-  return (lastSpace > minThreshold) ? '${joined.substring(0, lastSpace)}...' : '${joined.substring(0, maxLength)}...';
-}
-
-String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html, maxLength: maxLength);
 
 class MessagesNotifier extends Notifier<List<dynamic>> {
   Timer? _timer;
@@ -1296,550 +373,29 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
 
   @override
   List<dynamic> build() {
-    _onNewLocationLearned = () {
+    onNewLocationLearned = () {
       state = [...state];
     };
     ref.onDispose(() {
       _timer?.cancel();
-      _onNewLocationLearned = null;
+      onNewLocationLearned = null;
     });
-    
-    _loadLearnedLocations();
+
+    loadLearnedLocations();
     _fetchData();
     return [];
   }
 
-  int? _extractAltitude(String text) {
-    final tLower = text.toLowerCase();
-    final mExplicit = RegExp(r'(?:висот[аі]|h|alt)\s*[:=-]?\s*(\d{3,4})', caseSensitive: false).firstMatch(tLower);
-    if (mExplicit != null) {
-      final val = int.tryParse(mExplicit.group(1)!);
-      if (val != null && val >= 100 && val <= 15000) return val;
-    }
-    final m = RegExp(r'(\d{3,4})\s*(?:м|метр|m)(?![а-яіїєґa-z])', caseSensitive: false).firstMatch(tLower);
-    if (m != null) {
-      final val = int.tryParse(m.group(1)!);
-      if (val != null) return val;
-    }
-    final matches = RegExp(r'\b(\d{3,4})\b').allMatches(text);
-    for (final match in matches) {
-      final val = int.tryParse(match.group(1)!);
-      if (val != null && val >= 300 && val <= 7500 && val % 10 == 0) {
-        return val;
-      }
-    }
-    return null;
-  }
-
-  int? extractAltitude(String text) => _extractAltitude(text);
-
-  Map<String, dynamic> _analyzeLocalThreat(String text, {int? altitudeMeters}) {
-    final tLower = text.toLowerCase();
-
-    final bool hasExplicitDrone = tLower.contains('шахед') ||
-        tLower.contains('бпла') ||
-        tLower.contains('мопед') ||
-        tLower.contains('двз') ||
-        tLower.contains('дрон') ||
-        tLower.contains('геран');
-
-    // Балістичний тригер: ТІЛЬКИ явні ракетні маркери, '!!!!' або суто ізольоване одне-два слова капсом ('УВАГА', 'ЦІЛЬ', 'ПУСК', 'ВИХОДИ', 'ШВИДКІСНА', 'БАЛІСТИКА') без населених пунктів
-    final bool hasBallisticMarker = tLower.contains('швидкісна') ||
-        tLower.contains('швидкісні') ||
-        tLower.contains('виходи') ||
-        tLower.contains('багато цілей') ||
-        tLower.contains('цілей йде') ||
-        tLower.contains('цілі йдуть') ||
-        text.contains('!!!!') ||
-        RegExp(r'^(?:УВАГА|ЦІЛЬ|ПУСК|ВИХОДИ|ШВИДКІСНА|БАЛІСТИКА)[!\s⚠️]*$').hasMatch(text.trim());
-
-    // Якщо вказано висоту типову для БпЛА (300..5000 м) — це гарантовано не балістика
-    final bool hasUavAltitude = (altitudeMeters != null && altitudeMeters >= 300 && altitudeMeters <= 5000);
-
-    if (tLower.contains('каб') || tLower.contains('кар ') || tLower.contains('керован') || tLower.contains('уфаб')) {
-      return {'type': 'kab', 'speed': 850.0, 'label': 'КАБ / КАР'};
-    } else if (tLower.contains('на керуванні') || tLower.contains('🎮') || tLower.contains('сікер') || tLower.contains('оптичн') || tLower.contains('старлінк')) {
-      return {'type': 'uav_guided', 'speed': 220.0, 'label': 'БпЛА на керуванні 🎮'};
-    } else if (tLower.contains('розвідник') || tLower.contains('орлан') || tLower.contains('зала') || tLower.contains('zala') || tLower.contains('суперкам') || tLower.contains('supercam') || tLower.contains('ланцет')) {
-      return {'type': 'uav_recon', 'speed': 130.0, 'label': 'РозвідБпЛА 👁️', 'isCircling': true};
-    } else if (tLower.contains('пародія') || tLower.contains('гербера') || tLower.contains('імітатор') || tLower.contains('фальш') || tLower.contains('пінопласт')) {
-      return {'type': 'uav_decoy', 'speed': 160.0, 'label': 'Імітатор / Фальш-ціль'};
-    } else if (!hasUavAltitude) {
-      if (tLower.contains('кинджал') || tLower.contains('циркон') || tLower.contains('гіперзвук')) {
-        return {'type': 'missile_hypersonic', 'speed': 12000.0, 'label': 'Гіперзвукова ракета'};
-      } else if (tLower.contains('баліст') || tLower.contains('іскандер') || tLower.contains('кн-23') || tLower.contains('kn-23') || tLower.contains('с-300') || tLower.contains('с-400') || tLower.contains('☄')) {
-        return {'type': 'missile_ballistic', 'speed': 5000.0, 'label': 'Балістична / Швидкісна ціль'};
-      } else if (!hasExplicitDrone && hasBallisticMarker) {
-        return {'type': 'missile_ballistic', 'speed': 5000.0, 'label': 'Балістична / Швидкісна ціль'};
-      } else if (tLower.contains('х-22') || tLower.contains('х-32') || tLower.contains('онікс') || tLower.contains('х-31') || tLower.contains('х-59') || tLower.contains('х-69')) {
-        return {'type': 'missile_supersonic', 'speed': 3200.0, 'label': 'Надзвукова ракета (Х-22/Онікс)'};
-      } else if (tLower.contains('крилат') || tLower.contains('х-101') || tLower.contains('калібр') || tLower.contains('іскандер-к') || (tLower.contains('ракет') && !tLower.contains('реактив'))) {
-        return {'type': 'missile_cruise', 'speed': 900.0, 'label': 'Крилата ракета'};
-      }
-    }
-
-    final bool hasPistonDrone = tLower.contains('звичайний') ||
-        tLower.contains('звичайні') ||
-        tLower.contains('звч') ||
-        tLower.contains('не реактив') ||
-        tLower.contains('двз') ||
-        tLower.contains('мопед') ||
-        tLower.contains('повільн');
-
-    bool highAlt = (altitudeMeters != null && altitudeMeters >= 2000);
-    if (!highAlt) {
-      final altMatch = RegExp(r'(\d+(?:[.,]\d+)?)\s*(м|км)\b', caseSensitive: false).firstMatch(tLower);
-      if (altMatch != null) {
-        final val = double.tryParse(altMatch.group(1)!.replaceAll(',', '.')) ?? 0.0;
-        final unit = altMatch.group(2)!.toLowerCase();
-        if ((unit == 'км' && val >= 2.0) || (unit == 'м' && val >= 2000.0)) {
-          highAlt = true;
-        }
-      }
-    }
-
-    final bool isJet = !hasPistonDrone && (
-        tLower.contains('реактив') ||
-        tLower.contains('реактів') ||
-        tLower.contains('реакти') ||
-        tLower.contains('реакт ') ||
-        tLower.contains('швидкісн') ||
-        tLower.contains('бандерол') ||
-        tLower.contains('герань-3') ||
-        tLower.contains('герань 3') ||
-        tLower.contains('турбо') ||
-        highAlt);
-
-    if (isJet) {
-      return {'type': 'shahed_jet', 'speed': 480.0, 'label': 'Реактивний БпЛА'};
-    }
-    return {'type': 'shahed', 'speed': 185.0, 'label': 'Ударний БпЛА (Шахед)'};
-  }
-
-  String categorizeLocalMessage(String text) => _categorizeLocalMessage(text);
-
-  String _categorizeLocalMessage(String text) {
-    final tLower = text.toLowerCase();
-    const offtopic = ['футбол', 'матч', 'гол', 'рахунок', 'динамо', 'шахтар', 'збірна', 'пенальті', 'розіграш', 'реклама', 'спонсор'];
-    if (offtopic.any((kw) => tLower.contains(kw))) return 'ignore';
-
-    final bool isCasualtyOrAftermath = tLower.contains('загибл') ||
-        tLower.contains('постраждал') ||
-        tLower.contains('дснс') ||
-        tLower.contains('пожеж') ||
-        tLower.contains('уламк') ||
-        tLower.contains('підсумки') ||
-        tLower.contains('за ніч') ||
-        tLower.contains('станом на');
-    if (text.trim().length < 40 &&
-        (tLower.contains('знищено') ||
-         tLower.contains('ліквідован') ||
-         tLower.contains('збито') ||
-         tLower.contains('мінус') ||
-         tLower.contains('відбито')) &&
-        !isCasualtyOrAftermath) {
-      return 'clear';
-    }
-
-    const news = ['відомо про', 'загибл', 'постраждал', 'внаслідок', 'наслідк', 'відбито', 'знищено', 'пошкоджен', 'зведення', 'підсумки', 'станом на', 'уламк', 'пожеж', 'жертв', 'ліквідован', 'врятован', 'на місці', 'дснс'];
-    if (news.any((kw) => tLower.contains(kw))) return 'news';
-
-    const clear = [
-      'відбій', 'зелений', 'безпек', 'дорозвідка', 'чисто', 'локаційно', 'втрачено',
-      'не спостерігається', 'не фіксується', 'немає цілей', 'без фіксаці', 'фіксацій немає',
-      'не фіксуються', 'чисте небо', 'попередньо чисто', 'все походу', 'та все, нема', 'нема вже',
-    ];
-    if (clear.any((kw) => tLower.contains(kw)) || _dynamicClearKeywords.any((kw) => tLower.contains(kw))) return 'clear';
-
-    const danger = [
-      'вибух', 'ракет', 'шахед', 'баліст', 'бпла', 'мопед', 'пуск', 'сікер', 'реактив',
-      'бандерол', 'зниження', '🎮', '🅿️', '🛵', '☄', 'розворот', 'в бік', 'далі на',
-      'курс', 'коло ріже', 'скинув висоту', 'точка входу', 'міг', 'mig', 'кинджал', 'циркон',
-      'звичайний', 'не реактив', 'ще один', 'напрямок', 'вектор', 'північніше', 'південніше',
-      'західніше', 'східніше', 'розвернувся', 'звернув', 'падає',
-      'ціль', 'швидкісна', 'швидкісні', 'виходи', 'прилуки', 'бобровиця', 'згурівк', 'штуки',
-      'багато цілей', 'цілей йде', 'цілі йдуть', 'група цілей', 'увага !!', 'увага!!',
-    ];
-    if (danger.any((kw) => tLower.contains(kw)) ||
-        _dynamicDangerKeywords.any((kw) => tLower.contains(kw)) ||
-        RegExp(r'^\s*\+\s*\S+').hasMatch(tLower) ||
-        text.contains('!!!') ||
-        (text.contains('!!') && text.trim().length <= 45)) {
-      return 'danger';
-    }
-
-    if (tLower.contains('тривог') || tLower.contains('увага') || tLower.contains('укритт') || tLower.contains('сектор')) {
-      return 'alert';
-    }
-    return 'info';
-  }
-
-  List<Map<String, dynamic>> parseLocalThreats(String text) {
-    // 1. Специфічні стоп-слова всеукраїнських зведень та інших регіонів
-    const globalDigestStopWords = [
-      'кроп', 'кропивницьк', 'знам\'ян', 'знамян', 'олександрі', 'павлиш', 
-      'горішні плавні', 'омельник', 'лихівка', 'жовті води', 'карлівка', 
-      'берестин', 'чутове', 'магдалинівк', 'кобеля', 'перещепин', 'долинськ',
-      'устинівк', 'широке', 'кривий ріг', 'херсонщин', 'миколаївщин', 'запоріжж',
-      'дніпропетров', 'харківщин', 'сумщин', 'донеччин', 'луганщин', 'одещин'
-    ];
-
-    final tLower = text.toLowerCase();
-    final bool hasGlobalStopWord = globalDigestStopWords.any((sw) {
-      if (sw == 'олександрі') {
-        return tLower.contains('олександрі') && !tLower.contains('олександрів');
-      }
-      return tLower.contains(sw);
-    });
-    if (hasGlobalStopWord) {
-      // Якщо це глобальне зведення іншого регіону — одразу повертаємо порожній список (ігноруємо)
-      return [];
-    }
-
-    // 2. Фільтр на всеукраїнські та міжрегіональні дайджести
-    // Якщо всі локації належать Київщині / Києву — НІКОЛИ не блокуємо
-    final Set<String> externalMatches = {};
-    for (final r in _kFarRegions) {
-      if (tLower.contains(r)) externalMatches.add(r);
-    }
-    for (final b in _kExternalBorderKeys) {
-      if (tLower.contains(b)) externalMatches.add(b);
-    }
-
-    final bool hasTrajectory = tLower.contains('->') || tLower.contains('—>') || tLower.contains('-->');
-    if ((externalMatches.length >= 3 && !hasTrajectory) || externalMatches.length >= 4) {
-      // Це зведення-простиня з багатьма зовнішніми регіонами — відсіюємо
-      return [];
-    }
-
-    _checkAndAutoGeocodeLocations(text);
-    final globalAlt = _extractAltitude(text);
-    final globalThreat = _analyzeLocalThreat(text, altitudeMeters: globalAlt);
-    final textWithoutReply = text.replaceAll(RegExp(r'^↪️.*?\n'), '');
-    final cleanLower = textWithoutReply.toLowerCase();
-
-    final bool hasMultipleDrones = RegExp(r'(?:^|\s)(?:[1-9]\s*(?:х|x|шт)?|ще один|кілька|групи|декілька|шахеди|бпла|цілі)(?:\s|$)').hasMatch(cleanLower);
-    final bool hasSplitters = textWithoutReply.contains(' та ') || textWithoutReply.contains(' і ') || textWithoutReply.contains(',');
-    List<String> lines = [];
-    for (final rawLine in textWithoutReply.split('\n')) {
-      if (hasMultipleDrones && hasSplitters && !rawLine.toLowerCase().contains('через')) {
-        lines.addAll(rawLine.replaceAll(' та ', '\n').replaceAll(' і ', '\n').replaceAll(',', '\n').split('\n'));
-      } else {
-        lines.add(rawLine);
-      }
-    }
-    final List<Map<String, dynamic>> parsed = [];
-    const negations = ['не йде', 'не летить', 'не фіксується', 'немає', 'відбій', 'чисто'];
-
-    for (final line in lines) {
-      final stripped = line.trim();
-      if (stripped.isEmpty) continue;
-      final lineLower = ' ${stripped.toLowerCase()} ';
-      if (negations.any((n) => lineLower.contains(n))) continue;
-
-      // 2. Фільтр сусідніх та далеких регіонів
-      const neighborOblastKeys = {'житомирщин', 'чернігівщин', 'черкащин', 'вінниччин', 'полтавщин'};
-      final bool hasNeighborOblast = neighborOblastKeys.any((r) => lineLower.contains(r));
-      final bool hasFarRegion = _kFarRegions.any((r) => lineLower.contains(r));
-
-      // Для ключів сусідніх областей дозволяємо рядок ТІЛЬКИ тоді, коли в цьому ж самому рядку (line) є конкретне місто/село Київської області (не просто слово "київщина", а реальний населений пункт із _kKyivLocations, що не входить у _kExternalBorderKeys)
-      final bool hasConcreteKyivLocInLine = _kKyivLocations.keys.any((k) =>
-        !_kExternalBorderKeys.contains(k) &&
-        k != 'київщин' &&
-        lineLower.contains(k)
-      );
-
-      if (hasNeighborOblast && !hasConcreteKyivLocInLine) {
-        continue;
-      }
-      if (hasFarRegion && !hasConcreteKyivLocInLine) {
-        continue;
-      }
-
-      final headerCheck = stripped.toLowerCase().replaceAll(RegExp(r'[^а-яіїєґa-z]'), '');
-      if (headerCheck == 'київщина' || headerCheck == 'київ' || headerCheck == 'київськаобласть' || headerCheck == 'київтаобласть') {
-        continue;
-      }
-
-      final searchLine = lineLower.replaceAll(RegExp(r'київщин\w*|київськ\w*'), '        ');
-      final List<(int, int, String, (double, double, String))> rawLocs = [];
-
-      _kKyivLocations.forEach((key, data) {
-        int startPos = 0;
-        while (true) {
-          final idx = searchLine.indexOf(key, startPos);
-          if (idx == -1) break;
-          final isWordStart = (idx == 0 || !RegExp(r'[а-яіїєґa-z0-9]').hasMatch(searchLine[idx - 1]));
-          if (isWordStart) {
-            bool isFalseMatch = false;
-            if (key == 'гора') {
-              final prefix = searchLine.substring(math.max(0, idx - 15), idx).toLowerCase();
-              if (prefix.contains('батиєв') || prefix.contains('черепанов')) {
-                isFalseMatch = true;
-              }
-            } else if (key == 'море') {
-              final prefix = searchLine.substring(math.max(0, idx - 10), idx).toLowerCase();
-              if (prefix.contains('чорн')) {
-                isFalseMatch = true;
-              }
-            }
-            if (!isFalseMatch) {
-              rawLocs.add((idx, idx + key.length, key, data));
-            }
-          }
-          startPos = idx + key.length;
-        }
-      });
-
-      if (rawLocs.isEmpty) continue;
-
-      // 1. Жорстке правило прив'язки до Київщини (Border & Neighbor Regions Filter):
-      final bool hasInternalKyivLoc = rawLocs.any((item) => !_kExternalBorderKeys.contains(item.$3));
-      if (!hasInternalKyivLoc) {
-        continue;
-      }
-
-      // Фільтруємо перекриття: якщо один знайдений ключ є частиною іншого довшого збігу (наприклад, "житомир" всередині "житомирщину")
-      final List<(int, int, String, (double, double, String))> locs = [];
-      for (int i = 0; i < rawLocs.length; i++) {
-        final a = rawLocs[i];
-        bool isSubsumed = false;
-        final lenA = a.$2 - a.$1;
-        for (int j = 0; j < rawLocs.length; j++) {
-          if (i == j) continue;
-          final b = rawLocs[j];
-          final lenB = b.$2 - b.$1;
-          final bool overlaps = (a.$1 < b.$2 && b.$1 < a.$2);
-          if (overlaps && (lenB > lenA || (lenB == lenA && j < i))) {
-            isSubsumed = true;
-            break;
-          }
-        }
-        if (!isSubsumed) {
-          locs.add(a);
-        }
-      }
-
-      locs.sort((a, b) => a.$1.compareTo(b.$1));
-
-      // Розумна обробка подвійних локацій через слеш "Локація1/Локація2" (Sector Midpoint)
-      final List<(int, int, (double, double, String))> mergedLocs = [];
-      int locIdx = 0;
-      while (locIdx < locs.length) {
-        if (locIdx + 1 < locs.length) {
-          final a = locs[locIdx];
-          final b = locs[locIdx + 1];
-          if (a.$2 <= b.$1) {
-            final between = searchLine.substring(a.$2, b.$1);
-            if (RegExp(r'^[\sа-яіїєґa-z.\-]*\/[\sа-яіїєґa-z.\-]*$', caseSensitive: false).hasMatch(between)) {
-              final lat = (a.$4.$1 + b.$4.$1) / 2.0;
-              final lon = (a.$4.$2 + b.$4.$2) / 2.0;
-              final name = '${a.$4.$3} / ${b.$4.$3}';
-              mergedLocs.add((a.$1, b.$2, (lat, lon, name)));
-              locIdx += 2;
-              continue;
-            }
-          }
-        }
-        mergedLocs.add((locs[locIdx].$1, locs[locIdx].$2, locs[locIdx].$4));
-        locIdx++;
-      }
-
-      final Set<String> addedNames = {};
-      final List<Map<String, dynamic>> path = [];
-      for (final item in mergedLocs) {
-        final data = item.$3;
-        if (!addedNames.contains(data.$3)) {
-          double lat = data.$1;
-          double lon = data.$2;
-          String displayName = data.$3;
-
-          // Компасні модифікатори ("східніше", "західніше", "північніше", "південніше")
-          final startIdx = math.max(0, item.$1 - 25);
-          final endIdx = math.min(searchLine.length, item.$2 + 25);
-          final surrounding = searchLine.substring(startIdx, endIdx);
-
-          bool hasCompassModifier = false;
-          if (surrounding.contains('східніш') || surrounding.contains('на схід')) {
-            lon += 0.075;
-            displayName = 'Східніше $displayName';
-            hasCompassModifier = true;
-          } else if (surrounding.contains('західніш') || surrounding.contains('на захід')) {
-            lon -= 0.075;
-            displayName = 'Західніше $displayName';
-            hasCompassModifier = true;
-          } else if (surrounding.contains('північніш') || surrounding.contains('на північ')) {
-            lat += 0.045;
-            displayName = 'Північніше $displayName';
-            hasCompassModifier = true;
-          } else if (surrounding.contains('південніш') || surrounding.contains('на південь')) {
-            lat -= 0.045;
-            displayName = 'Південніше $displayName';
-            hasCompassModifier = true;
-          }
-
-          path.add({'name': displayName, 'lat': lat, 'lon': lon, 'hasCompass': hasCompassModifier});
-          addedNames.add(data.$3);
-        }
-      }
-
-      // Directional reordering: "від/через/біля/район X" = start/transit, "на/курсом на/вектор на Y" = destination
-      if (path.length >= 2) {
-        Map<String, dynamic>? toItem;
-        Map<String, dynamic>? fromItem;
-
-        for (int pi = 0; pi < path.length; pi++) {
-          final item = path[pi];
-          final rawName = (item['name'] as String).toLowerCase();
-          final locName = rawName.replaceAll(RegExp(r'^(північніше|південніше|західніше|східніше)\s+'), '');
-          final cleanBase = locName.replaceAll(RegExp(r'\s*\([^)]*\)'), '').trim();
-          final matchSub = cleanBase.substring(0, math.min(4, cleanBase.length)).toLowerCase();
-
-          final fromPattern = RegExp(r'(?:від|з|із|через|біля|вже біля|район|в районі|повз)\s+\S*' + RegExp.escape(matchSub), caseSensitive: false);
-          if (fromPattern.hasMatch(lineLower)) {
-            fromItem ??= item;
-          }
-          final toPattern = RegExp(r'(?:курсом(?:\s+на)?|курс(?:\s+на)?|вектором(?:\s+на)?|вектор(?:\s+на)?|у напрямку|в напрямку|у бік|в бік|на)\s*[~≈]?\s*\S*' + RegExp.escape(matchSub), caseSensitive: false);
-          if (toPattern.hasMatch(lineLower)) {
-            toItem ??= item;
-          }
-        }
-
-        if (fromItem != null && toItem != null && identical(fromItem, toItem)) {
-          fromItem = null;
-        }
-
-        if (fromItem != null) {
-          path.remove(fromItem);
-          path.insert(0, fromItem);
-        }
-
-        final compassIdx = path.indexWhere((p) => p['hasCompass'] == true);
-        if (compassIdx != -1 && toItem != null && path.indexOf(toItem) < compassIdx) {
-          path.remove(toItem);
-          path.add(toItem);
-        } else if (toItem != null && path.indexOf(toItem) != path.length - 1) {
-          path.remove(toItem);
-          path.add(toItem);
-        }
-      }
-
-      if (path.length >= 2 && path.last['name'] == 'Київ') {
-        final p1 = path[path.length - 2];
-        final p2 = path.last;
-        double lat1 = p1['lat'];
-        double lon1 = p1['lon'];
-        double lat2 = p2['lat'];
-        double lon2 = p2['lon'];
-
-        double dLat = lat2 - lat1;
-        double dLon = lon2 - lon1;
-        double dist = math.sqrt(dLat * dLat + dLon * dLon);
-        
-        double kyivRadius = 0.13; 
-        if (dist > kyivRadius) {
-          double ratio = (dist - kyivRadius) / dist;
-          p2['lat'] = lat1 + dLat * ratio;
-          p2['lon'] = lon1 + dLon * ratio;
-        }
-      }
-
-      final lineAlt = _extractAltitude(line) ?? globalAlt;
-      final lineThreat = _analyzeLocalThreat(line, altitudeMeters: lineAlt);
-      final bool isCircling = lineLower.contains('кружля') || lineLower.contains('крутить') || lineLower.contains('намоту') || (lineThreat['isCircling'] == true);
-      final bool isDescending = lineLower.contains('зниження') || lineLower.contains('знижується') || lineLower.contains('падає') || lineLower.contains('пікірує') || lineLower.contains('низько') || (lineAlt != null && lineAlt <= 1500);
-
-      final String? altitudeStr = lineAlt != null ? '$lineAlt м' : null;
-
-      final match = RegExp(r"(?:^|[\s\W_])([1-9]|один|два|три|чотири|п'ять|шість|декілька|кілька)\s*(?:х|x|шт|штук|шт\.)?(?:\s|$)", caseSensitive: false).firstMatch(lineLower);
-      int count = 1;
-      if (match != null) {
-        final qStr = match.group(1)!;
-        if (qStr == 'декілька' || qStr == 'кілька') {
-          count = 3;
-        } else if (qStr == 'один') {
-          count = 1;
-        } else if (qStr == 'два') {
-          count = 2;
-        } else if (qStr == 'три') {
-          count = 3;
-        } else if (qStr == 'чотири') {
-          count = 4;
-        } else if (qStr == 'п\'ять') {
-          count = 5;
-        } else if (qStr == 'шість') {
-          count = 6;
-        } else {
-          count = int.tryParse(qStr) ?? 1;
-        }
-      }
-      
-      final effectiveType = (lineThreat['type'] != null && lineThreat['type'] != 'shahed')
-          ? lineThreat['type']
-          : (globalThreat['type'] ?? 'shahed');
-      final effectiveSpeed = (lineThreat['type'] != null && lineThreat['type'] != 'shahed')
-          ? lineThreat['speed']
-          : (globalThreat['speed'] ?? 185.0);
-      final effectiveLabel = (lineThreat['type'] != null && lineThreat['type'] != 'shahed')
-          ? lineThreat['label']
-          : (globalThreat['label'] ?? _getDefaultThreatLabel(effectiveType));
-
-      for (int c = 0; c < count; c++) {
-        parsed.add({
-          'type': effectiveType,
-          'speed': effectiveSpeed,
-          'label': effectiveLabel,
-          'path': List<Map<String, dynamic>>.from(path),
-          'isCircling': isCircling,
-          'altitude': altitudeStr,
-          'altitudeMeters': lineAlt,
-          'isDescending': isDescending,
-        });
-      }
-    }
-
-    // 3. Блок "в зону" виконується ТІЛЬКИ якщо не знайдено жодного конкретного населеного пункту (parsed.isEmpty)
-    if (parsed.isEmpty) {
-      final inZoneMatch = RegExp(
-        r'(?:^|[\s\W_])(?:([1-9]|кілька|багато)\s*(?:х|x|шт|штук|шт\.)?\s*)?(?:в|у)\s*(?:зону|відповідальність|наш сектор)',
-        caseSensitive: false,
-      ).firstMatch(tLower);
-      if (inZoneMatch != null) {
-        int quantity = 1;
-        if (inZoneMatch.group(1) != null) {
-          final qStr = inZoneMatch.group(1)!;
-          if (qStr == 'кілька' || qStr == 'багато') {
-            quantity = 3;
-          } else {
-            quantity = int.tryParse(qStr) ?? 1;
-          }
-        }
-        for (int i = 0; i < quantity; i++) {
-          parsed.add({
-            'path': <LatLng>[],
-            'route': 'В зоні відповідальності',
-            'speed': globalThreat['speed'] ?? 185.0,
-            'type': globalThreat['type'] ?? 'shahed',
-            'label': globalThreat['label'] ?? 'Ударний БпЛА (Шахед)',
-            'altitude': globalAlt != null ? '$globalAlt м' : null,
-            'altitudeMeters': globalAlt,
-            'isCircling': globalThreat['isCircling'] == true,
-            'isDescending': globalAlt != null && globalAlt <= 1500,
-          });
-        }
-      }
-    }
-    return parsed;
-  }
-
+  int? extractAltitude(String text) => ThreatParser.extractAltitude(text);
+  List<Map<String, dynamic>> parseLocalThreats(String text) => ThreatParser.parseLocalThreats(text);
   String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html, maxLength: maxLength);
-  String _cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html, maxLength: maxLength);
+  String categorizeLocalMessage(String text) => ThreatParser.categorizeLocalMessage(text);
+  List<dynamic> deduplicateMessages(List<dynamic> rawMsgs) => ThreatParser.deduplicateMessages(rawMsgs);
 
   String _decodeLocalToken() {
     const encoded = [49, 3, 51, 12, 5, 59, 22, 63, 8, 46, 5, 9, 63, 25, 40, 31, 46, 5, 99, 99, 104, 107];
     return String.fromCharCodes(encoded.map((b) => b ^ 0x5A));
   }
-
   Future<List<Map<String, dynamic>>> _fetchDirectTelegramChannels() async {
     final baseChannels = [
       ('kyiv_airdef', 'Kyiv AirDefense 🌇', false),
@@ -2009,84 +565,6 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
     return deduplicateMessages(allMsgs).cast<Map<String, dynamic>>().take(100).toList();
   }
 
-  String _normalizeForDedup(String text) {
-    return text
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^а-яіїєґa-z0-9\s]'), ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-  }
-
-  bool _isSimilarText(String normA, String normB) {
-    if (normA.isEmpty || normB.isEmpty) return false;
-    if (normA == normB) return true;
-    if (normA.length >= 12 && normB.length >= 12) {
-      if (normA.contains(normB) || normB.contains(normA)) return true;
-      final wordsA = normA.split(' ').where((w) => w.length > 2).toSet();
-      final wordsB = normB.split(' ').where((w) => w.length > 2).toSet();
-      if (wordsA.length >= 3 && wordsB.length >= 3) {
-        final intersection = wordsA.intersection(wordsB).length;
-        final minLen = math.min(wordsA.length, wordsB.length);
-        if (intersection / minLen >= 0.8) return true;
-      }
-    }
-    return false;
-  }
-
-  List<dynamic> deduplicateMessages(List<dynamic> rawMsgs) {
-    final Set<String> seenIds = {};
-    final List<dynamic> keptChronological = [];
-    final List<String> keptNorms = [];
-    final nowUtc = DateTime.now().toUtc();
-
-    // Проходимо від старіших до новіших, щоб залишати першоджерело і відсікати повторні дублікати
-    for (final msg in rawMsgs.reversed) {
-      if (msg['date'] != null) {
-        try {
-          final msgTime = DateTime.parse(msg['date'].toString()).toUtc();
-          if (nowUtc.difference(msgTime).inHours >= 12) {
-            continue;
-          }
-        } catch (_) {}
-      }
-
-      final ch = (msg['channel'] ?? '').toString();
-      final id = msg['id'];
-      if (id != null && id != 0 && id != '0') {
-        final idKey = '$ch:$id';
-        if (seenIds.contains(idKey)) continue;
-        seenIds.add(idKey);
-      }
-
-      final norm = _normalizeForDedup((msg['text'] ?? '').toString());
-      if (norm.isEmpty) continue;
-
-      bool isDup = false;
-      final checkStart = keptNorms.length > 25 ? keptNorms.length - 25 : 0;
-      for (int i = checkStart; i < keptNorms.length; i++) {
-        if (_isSimilarText(norm, keptNorms[i])) {
-          try {
-            final timeA = DateTime.parse(msg['date'].toString());
-            final timeB = DateTime.parse(keptChronological[i]['date'].toString());
-            if (timeA.difference(timeB).inMinutes.abs() < 10) {
-               isDup = true;
-               break;
-            }
-          } catch (_) {
-            isDup = true;
-            break;
-          }
-        }
-      }
-      if (isDup) continue;
-
-      keptChronological.add(msg);
-      keptNorms.add(norm);
-    }
-
-    return keptChronological.reversed.toList();
-  }
-
   Future<void> _fetchData() async {
     bool fetchedFromBackend = false;
     
@@ -2138,116 +616,6 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
 final messagesProvider = NotifierProvider<MessagesNotifier, List<dynamic>>(() {
   return MessagesNotifier();
 });
-
-String _getDefaultThreatLabel(String type) {
-  switch (type) {
-    case 'missile_hypersonic': return 'Гіперзвукова ракета';
-    case 'missile_ballistic': return 'Балістична / Швидкісна ціль';
-    case 'missile_supersonic': return 'Надзвукова ракета (Х-22/Онікс)';
-    case 'missile_cruise': return 'Крилата ракета';
-    case 'kab': return 'КАБ / КАР';
-    case 'uav_guided': return 'БпЛА на керуванні 🎮';
-    case 'uav_recon': return 'РозвідБпЛА 👁️';
-    case 'uav_decoy': return 'Імітатор / Фальш-ціль';
-    case 'shahed_jet': return 'Реактивний БпЛА';
-    case 'shahed':
-    default: return 'Ударний БпЛА (Шахед)';
-  }
-}
-
-double _getDefaultThreatSpeed(String type) {
-  switch (type) {
-    case 'missile_hypersonic': return 12000.0;
-    case 'missile_ballistic': return 5000.0;
-    case 'missile_supersonic': return 3200.0;
-    case 'missile_cruise': return 900.0;
-    case 'kab': return 850.0;
-    case 'uav_guided': return 220.0;
-    case 'uav_recon': return 130.0;
-    case 'uav_decoy': return 160.0;
-    case 'shahed_jet': return 480.0;
-    case 'shahed':
-    default: return 185.0;
-  }
-}
-
-int _getThreatLevel(bool isAlert, bool isKyivRegion, List<Map<String, dynamic>> threats, {bool globalMissileThreat = false}) {
-  if (!isAlert) return 1;
-  bool hasMissiles = globalMissileThreat || threats.any((t) => 
-      t['type'] == 'missile_ballistic' || 
-      t['type'] == 'missile_hypersonic' || 
-      t['type'] == 'missile_supersonic' ||
-      t['type'] == 'missile_cruise' ||
-      t['type'] == 'kab'
-  );
-  if (hasMissiles) return 3; 
-  return 2; 
-}
-
-Color _getAlertFillColor(int threatLevel) {
-  if (threatLevel == 3) return Colors.red.withValues(alpha: 0.45);
-  if (threatLevel == 2) return const Color(0xFFF57C00).withValues(alpha: 0.45);
-  return Colors.transparent;
-}
-
-Color _getAlertBorderColor(int threatLevel, {bool defaultFaint = true}) {
-  if (threatLevel == 3) return Colors.redAccent.withValues(alpha: 0.9);
-  if (threatLevel == 2) return const Color(0xFFF57C00).withValues(alpha: 0.9);
-  return defaultFaint ? Colors.white.withValues(alpha: 0.1) : Colors.transparent;
-}
-
-double _minDistanceToPointMeters(LatLng center, List<LatLng> path) {
-  if (path.isEmpty) return double.infinity;
-  const distance = Distance();
-  if (path.length == 1) {
-    return distance.as(LengthUnit.Meter, center, path.first);
-  }
-
-  double minDistance = double.infinity;
-  for (int i = 0; i < path.length - 1; i++) {
-    final p1 = path[i];
-    final p2 = path[i + 1];
-
-    final double midLatRad = (p1.latitude + p2.latitude + center.latitude) / 3.0 * math.pi / 180.0;
-    const double metersPerLat = 111132.95;
-    final double metersPerLon = 111132.95 * math.cos(midLatRad);
-
-    final double ax = p1.longitude * metersPerLon;
-    final double ay = p1.latitude * metersPerLat;
-    final double bx = p2.longitude * metersPerLon;
-    final double by = p2.latitude * metersPerLat;
-    final double cx = center.longitude * metersPerLon;
-    final double cy = center.latitude * metersPerLat;
-
-    final double abx = bx - ax;
-    final double aby = by - ay;
-    final double ab2 = abx * abx + aby * aby;
-
-    double segDist;
-    if (ab2 < 1.0) {
-      final double dcx = cx - ax;
-      final double dcy = cy - ay;
-      segDist = math.sqrt(dcx * dcx + dcy * dcy);
-    } else {
-      final double acx = cx - ax;
-      final double acy = cy - ay;
-      final double t = (acx * abx + acy * aby) / ab2;
-      final double clampedT = t.clamp(0.0, 1.0);
-      final double projX = ax + clampedT * abx;
-      final double projY = ay + clampedT * aby;
-      final double dx = cx - projX;
-      final double dy = cy - projY;
-      segDist = math.sqrt(dx * dx + dy * dy);
-    }
-
-    if (segDist < minDistance) {
-      minDistance = segDist;
-    }
-  }
-  return minDistance;
-}
-
-double minDistanceToPointMeters(LatLng center, List<LatLng> path) => _minDistanceToPointMeters(center, path);
 
 List<LatLng> _generateCirclePolygon(LatLng center, double radiusInMeters) {
   final List<LatLng> circle = [];
@@ -2372,53 +740,6 @@ class TestModeNotifier extends Notifier<bool> {
   }
 }
 
-class _ExpandableNewsItem extends StatefulWidget {
-  final String text;
-  final Color bulletColor;
-  final TextStyle style;
-
-  const _ExpandableNewsItem({
-    required this.text,
-    required this.bulletColor,
-    required this.style,
-  });
-
-  @override
-  State<_ExpandableNewsItem> createState() => _ExpandableNewsItemState();
-}
-
-class _ExpandableNewsItemState extends State<_ExpandableNewsItem> {
-  bool _isExpanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: InkWell(
-        onTap: () {
-          setState(() {
-            _isExpanded = !_isExpanded;
-          });
-        },
-        borderRadius: BorderRadius.circular(6),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('• ', style: TextStyle(color: widget.bulletColor, fontSize: 14)),
-            Expanded(
-              child: Text(
-                widget.text,
-                maxLines: _isExpanded ? null : 4,
-                overflow: _isExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
-                style: widget.style,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
 
 class MainScreen extends ConsumerStatefulWidget {
   const MainScreen({super.key});
@@ -2426,6 +747,7 @@ class MainScreen extends ConsumerStatefulWidget {
   @override
   ConsumerState<MainScreen> createState() => _MainScreenState();
 }
+
 
 class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObserver {
   final MapController _mapController = MapController();
@@ -2453,9 +775,13 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
   bool _isNightWatchMode = false;
   DateTime? _lastNightWatchAlarmTime;
   DateTime? _nightWatchDismissedUntil;
+  DateTime? _dismissedLaunchTimestamp;
 
   void _triggerNightWatchAlarm() {
     final now = DateTime.now();
+    if (LiveRadarNotificationService.instance.isAlarmMuted || VoiceAlertService.instance.isMuted) {
+      return;
+    }
     if (_nightWatchDismissedUntil != null && now.isBefore(_nightWatchDismissedUntil!)) {
       return;
     }
@@ -2587,6 +913,77 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     );
   }
 
+  Widget _buildStrategicLaunchBanner(StrategicLaunchEvent launchEvent, DateTime now) {
+    final remMin = launchEvent.remainingMinutes(now);
+    final estArrival = launchEvent.estimatedArrivalTime.toLocal();
+    final timeStr = '${estArrival.hour.toString().padLeft(2, '0')}:${estArrival.minute.toString().padLeft(2, '0')}';
+
+    String titleText;
+    if (remMin > 0) {
+      titleText = '🚀 Зафіксовано пуски ${launchEvent.type} • Орієнтовний час входу в простір Київщини: ~$remMin хв (о $timeStr)';
+    } else if (remMin >= -25) {
+      titleText = '🚨 Пуски ${launchEvent.type} • Ракети в повітряному просторі! (розрахунковий час був о $timeStr)';
+    } else {
+      titleText = '🚀 Пуски ${launchEvent.type} • Відстеження повітряної обстановки';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFB71C1C), Color(0xFF4A148C)],
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.redAccent.withValues(alpha: 0.4),
+            blurRadius: 10,
+            spreadRadius: 1,
+          ),
+        ],
+        border: Border.all(
+          color: Colors.redAccent.withValues(alpha: 0.8),
+          width: 1.4,
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.rocket_launch, color: Colors.amberAccent, size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              titleText,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 12.0,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          InkWell(
+            onTap: () {
+              setState(() {
+                _dismissedLaunchTimestamp = launchEvent.timestamp;
+              });
+            },
+            borderRadius: BorderRadius.circular(14),
+            child: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: Colors.black26,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.close, color: Colors.white70, size: 16),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _copyThreatSummary(BuildContext context, Map<String, dynamic> threat, List<WatchedLocation> watchedLocations) {
     final now = DateTime.now();
     final timeStr = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
@@ -2648,6 +1045,15 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initAndroidPermissions();
+    VoiceAlertService.instance.init();
+    LiveRadarNotificationService.instance.init();
+    LiveRadarNotificationService.instance.onMuteRequested = () {
+      if (mounted) {
+        setState(() {
+          _nightWatchDismissedUntil = DateTime.now().add(const Duration(minutes: 15));
+        });
+      }
+    };
   }
 
   @override
@@ -2656,6 +1062,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     _replayPlayTimer?.cancel();
     _widgetSyncDebounceTimer?.cancel();
     _rulerClearTimer?.cancel();
+    LiveRadarNotificationService.instance.cancelNotification();
     super.dispose();
   }
 
@@ -2737,25 +1144,6 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
         platform.invokeMethod('ensureAndroidPermissions');
       } catch (_) {}
     }
-  }
-
-  Future<bool> _isIgnoringBatteryOptimizations() async {
-    if (kIsWeb || !Platform.isAndroid) return true;
-    try {
-      const channel = MethodChannel('ua.kyiv.alert.monitor/widget');
-      final bool? res = await channel.invokeMethod<bool>('isIgnoringBatteryOptimizations');
-      return res ?? false;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  Future<void> _requestIgnoreBatteryOptimizations() async {
-    if (kIsWeb || !Platform.isAndroid) return;
-    try {
-      const channel = MethodChannel('ua.kyiv.alert.monitor/widget');
-      await channel.invokeMethod('requestIgnoreBatteryOptimizations');
-    } catch (_) {}
   }
 
   Widget _buildFeedFilterChip({
@@ -2859,169 +1247,49 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
   }
 
   Future<void> _downloadAndInstallApk(String apkUrl) async {
-    final uri = Uri.tryParse(apkUrl);
-    final allowedHosts = {'github.com', 'objects.githubusercontent.com', 'raw.githubusercontent.com'};
-    final isTrustedHttps = uri != null &&
-        uri.scheme == 'https' &&
-        allowedHosts.any((h) => uri.host == h || uri.host.endsWith('.$h'));
-
-    if (!isTrustedHttps) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Помилка безпеки: завантаження APK дозволено виключно через HTTPS з офіційних серверів GitHub',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
-            ),
-            backgroundColor: Color(0xFFC62828),
-          ),
-        );
-      }
-      return;
-    }
-    if (_isDownloadingUpdate) return;
-    setState(() {
-      _isDownloadingUpdate = true;
-      _downloadProgress = 0.0;
-    });
-
-    try {
-      String cacheDir = '';
-      if (!kIsWeb && Platform.isAndroid) {
-        try {
-          const channel = MethodChannel('ua.kyiv.alert.monitor/widget');
-          cacheDir = await channel.invokeMethod<String>('getCacheDir') ?? '';
-        } catch (_) {}
-      }
-
-      File apkFile;
-      if (cacheDir.isNotEmpty) {
-        apkFile = File('$cacheDir/update.apk');
-      } else {
-        final envTemp = Platform.environment['TEMP'] ?? Platform.environment['TMP'];
-        apkFile = File(envTemp != null ? '$envTemp/update.apk' : 'update.apk');
-      }
-
-      // Видаляємо попередній файл оновлення перед завантаженням
-      if (await apkFile.exists()) {
-        try {
-          await apkFile.delete();
-        } catch (_) {}
-      }
-
-      const int maxApkBytes = 157286400; // 150 МБ ліміт проти DoS
-      final client = http.Client();
-      try {
-        final request = http.Request('GET', uri);
-        final response = await client.send(request);
-
-        if (response.statusCode != 200) {
-          throw Exception('Сервер повернув код ${response.statusCode}');
-        }
-
-        final totalBytes = response.contentLength ?? 0;
-        if (totalBytes > maxApkBytes) {
-          throw Exception('Розмір оновлення ($totalBytes байт) перевищує ліміт безпеки (150 МБ)');
-        }
-
-        int receivedBytes = 0;
-        final sink = apkFile.openWrite();
-        try {
-          await for (final chunk in response.stream.timeout(const Duration(seconds: 45))) {
-            receivedBytes += chunk.length;
-            if (receivedBytes > maxApkBytes) {
-              throw Exception('Перевищено максимальний ліміт розміру файлу (150 МБ)');
-            }
-            sink.add(chunk);
-            if (totalBytes > 0 && mounted) {
-              setState(() {
-                _downloadProgress = (receivedBytes / totalBytes).clamp(0.0, 1.0);
-              });
-            }
-          }
-          await sink.flush();
-        } finally {
-          await sink.close();
-        }
-      } finally {
-        client.close();
-      }
-
-      // Перевірка сигнатури APK (ZIP Magic Header: 0x50, 0x4B, 0x03, 0x04)
-      if (await apkFile.exists()) {
-        final headerBytes = await apkFile.openRead(0, 4).first;
-        final bool isZipMagic = headerBytes.length >= 4 &&
-            headerBytes[0] == 0x50 &&
-            headerBytes[1] == 0x4B &&
-            headerBytes[2] == 0x03 &&
-            headerBytes[3] == 0x04;
-        if (!isZipMagic) {
-          try {
-            await apkFile.delete();
-          } catch (_) {}
-          throw Exception('Помилка безпеки: завантажений файл не є валідним APK-пакетом (невірна сигнатура)');
-        }
-      } else {
-        throw Exception('Файл оновлення не знайдено після завантаження');
-      }
-
-      if (mounted) {
-        setState(() {
-          _isDownloadingUpdate = false;
-        });
-      }
-
-      if (!kIsWeb && Platform.isAndroid) {
-        const channel = MethodChannel('ua.kyiv.alert.monitor/widget');
-        try {
-          await channel.invokeMethod('installApk', {'filePath': apkFile.path});
-        } on PlatformException catch (pe) {
-          if (pe.code == 'PERMISSION_REQUIRED') {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text(
-                    '⚠️ Дозвольте "Встановлювати невідомі додатки" на відкритому екрані та натисніть "Оновити" ще раз.',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
-                  ),
-                  duration: Duration(seconds: 7),
-                  backgroundColor: Color(0xFFB26A00),
-                ),
-              );
-            }
-            return;
-          }
-          rethrow;
-        }
-      } else {
+    await UpdateService.downloadAndInstallApk(
+      apkUrl: apkUrl,
+      onProgress: (progress) {
+        if (mounted) setState(() => _downloadProgress = progress);
+      },
+      onError: (err) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(
-                'Файл оновлення збережено: ${apkFile.path}',
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
-              ),
+              content: Text(err, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500)),
+              backgroundColor: const Color(0xFFC62828),
+            ),
+          );
+        }
+      },
+      onSavedNonAndroid: (path) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Файл оновлення збережено: $path', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500)),
               backgroundColor: const Color(0xFF2E7D32),
             ),
           );
         }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isDownloadingUpdate = false;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Помилка оновлення: $e',
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+      },
+      onPermissionRequired: () {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                '⚠️ Дозвольте "Встановлювати невідомі додатки" на відкритому екрані та натисніть "Оновити" ще раз.',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+              ),
+              duration: Duration(seconds: 7),
+              backgroundColor: Color(0xFFB26A00),
             ),
-            backgroundColor: const Color(0xFFC62828),
-          ),
-        );
-      }
-    }
+          );
+        }
+      },
+      onDownloadingChanged: (isDownloading) {
+        if (mounted) setState(() => _isDownloadingUpdate = isDownloading);
+      },
+    );
   }
 
   Widget _buildUpdateBanner(RemoteConfig config) {
@@ -3258,1209 +1526,31 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     }
   }
 
-  Widget _buildDigestStatCard(String title, String count, IconData icon, Color color) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: color.withValues(alpha: 0.25)),
-        ),
-        child: Column(
-          children: [
-            Icon(icon, color: color, size: 16),
-            const SizedBox(height: 4),
-            Text(
-              count,
-              style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 16),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              title,
-              style: TextStyle(color: Colors.grey.shade400, fontSize: 10),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   void _showMorningDigestSheet(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF16161E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (sheetContext) {
-        bool isLoadingNews = true;
-        List<String> energyNews = [];
-        List<String> transportNews = [];
-        bool hasInitiatedFetch = false;
-
-        Future<List<String>> fetchTelegramPreview(String channel, int limit) async {
-          try {
-            final response = await http.get(
-              Uri.parse('https://t.me/s/$channel'),
-              headers: {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'},
-            ).timeout(const Duration(seconds: 7));
-            if (response.statusCode == 200) {
-              final html = response.body;
-              final blocks = html.split('tgme_widget_message_wrap');
-              final list = <String>[];
-              final startIdx = blocks.length > limit * 3 ? blocks.length - limit * 3 : 1;
-              for (int i = startIdx; i < blocks.length; i++) {
-                final block = blocks[i];
-                final mainTextMatches = RegExp(r'tgme_widget_message_text(?![^>]*reply)[^>]*>([\s\S]*?)</div>').allMatches(block);
-                if (mainTextMatches.isNotEmpty) {
-                  final raw = mainTextMatches.first.group(1);
-                  if (raw != null) {
-                    final clean = cleanHtmlString(raw, maxLength: 3500);
-                    if (clean.isNotEmpty) {
-                      list.add(clean);
-                    }
-                  }
-                }
-              }
-              if (list.length > limit) {
-                return list.sublist(list.length - limit);
-              }
-              return list;
-            }
-          } catch (_) {}
-          return [];
-        }
-
-        return StatefulBuilder(
-          builder: (ctx, setSheetState) {
-            final messages = ref.read(messagesProvider);
-            final watchedLocations = ref.read(watchedLocationsProvider);
-
-            // Автономне / бекенд завантаження новин при відкритті
-            if (!hasInitiatedFetch) {
-              hasInitiatedFetch = true;
-              Future.microtask(() async {
-                try {
-                  // 1. Спроба завантажити з бекенду (тільки у Debug-режимі)
-                  if (kDebugMode) {
-                    try {
-                      final res = await http.get(Uri.parse('http://127.0.0.1:8000/api/digest')).timeout(const Duration(seconds: 3));
-                      if (res.statusCode == 200) {
-                        final data = jsonDecode(utf8.decode(res.bodyBytes));
-                        if (data is Map && data['energy_news'] is List && data['transport_news'] is List) {
-                          setSheetState(() {
-                            energyNews = (data['energy_news'] as List).map((e) => cleanHtmlString(e.toString(), maxLength: 3500)).where((s) => s.isNotEmpty).toList();
-                            transportNews = (data['transport_news'] as List).map((e) => cleanHtmlString(e.toString(), maxLength: 3500)).where((s) => s.isNotEmpty).toList();
-                            isLoadingNews = false;
-                          });
-                          return;
-                        }
-                      }
-                    } catch (_) {}
-                  }
-
-                  // 2. Автономний режим: прямий скрапінг t.me/s/dtek_ua та t.me/s/kyivpasstrans
-                  final dtek = await fetchTelegramPreview('dtek_ua', 6);
-                  final kova = await fetchTelegramPreview('Kyivoda', 5);
-                  var kpt = await fetchTelegramPreview('kyivpasstrans', 8);
-                  if (kpt.isEmpty) {
-                    kpt = await fetchTelegramPreview('kyivpastrans', 8);
-                  }
-
-                  final filteredEnergy = <String>[];
-                  for (final m in (dtek + kova).reversed) {
-                    final mLower = m.toLowerCase();
-                    if (mLower.contains('київ') || mLower.contains('графік') || mLower.contains('відключен') || mLower.contains('світл') || mLower.contains('енерг') || mLower.contains('дтек') || mLower.contains('аварійн')) {
-                      if (!filteredEnergy.contains(m)) {
-                        filteredEnergy.add(m);
-                      }
-                    }
-                  }
-
-                  final filteredTransport = <String>[];
-                  for (final m in kpt.reversed) {
-                    final mLower = m.toLowerCase();
-                    if (mLower.contains('святошин') || mLower.contains('борщагів') || mLower.contains('трамвай') || mLower.contains('курбаса') || mLower.contains('гната юри') || mLower.contains('кільцев')) {
-                      filteredTransport.insert(0, '⭐ [Святошин/Борщагівка] $m');
-                    } else if (mLower.contains('рух') || mLower.contains('затримк') || mLower.contains('змін') || mLower.contains('маршрут') || mLower.contains('поновлен') || mLower.contains('метро')) {
-                      filteredTransport.add(m);
-                    }
-                  }
-
-                  setSheetState(() {
-                    energyNews = filteredEnergy.take(4).map((e) => cleanHtmlString(e, maxLength: 3500)).where((s) => s.isNotEmpty).toList();
-                    transportNews = filteredTransport.take(4).map((e) => cleanHtmlString(e, maxLength: 3500)).where((s) => s.isNotEmpty).toList();
-                    isLoadingNews = false;
-                  });
-                } catch (_) {
-                  setSheetState(() {
-                    isLoadingNews = false;
-                  });
-                }
-              });
-            }
-
-            // Розрахунок нічної статистики (за останні 10 годин)
-            final now = DateTime.now().toUtc();
-            final cutoff = now.subtract(const Duration(hours: 10));
-
-            int totalThreats = 0;
-            int uavCount = 0;
-            int missileCount = 0;
-            int ppoMentions = 0;
-            DateTime? lastClearDt;
-            DateTime? activeBallisticUntil;
-
-            const ppoKeywords = ['ппо', 'працює ппо', 'робота ппо', 'роботі ппо', 'збиття', 'збито', 'мінус', 'ліквідовано'];
-            const clearKeywords = ['відбій', 'чисто', 'тихо', 'дорозвідка', 'локаційно втрачено', 'немає цілей'];
-            const missileKeywords = [
-              'ракет', 'крилаті', 'баліст', 'іскандер', 'кинджал', 'циркон', 'калібр',
-              'х-101', 'х-22', 'х-32', 'х-59', 'х-69', 'онікс', 'с-300', 'с-400',
-              'швидкісна', 'швидкісні', 'виходи', 'багато цілей', 'цілей йде'
-            ];
-            const negativeMissileWords = ['не підтверд', 'не фіксу', 'хибн', 'відбій', 'чисто'];
-
-            final Set<String> threatenedZoneNames = {};
-            final activeZones = watchedLocations.where((l) => l.enabled).toList();
-
-            // Фільтруємо повідомлення за останні 10 годин і сортуємо хронологічно
-            final recentMessages = messages.where((msg) {
-              if (msg['date'] == null) return false;
-              try {
-                final t = DateTime.parse(msg['date'].toString()).toUtc();
-                return !t.isBefore(cutoff);
-              } catch (_) {
-                return false;
-              }
-            }).toList();
-
-            recentMessages.sort((a, b) {
-              final da = DateTime.tryParse(a['date']?.toString() ?? '')?.toUtc() ?? DateTime.fromMillisecondsSinceEpoch(0);
-              final db = DateTime.tryParse(b['date']?.toString() ?? '')?.toUtc() ?? DateTime.fromMillisecondsSinceEpoch(0);
-              return da.compareTo(db);
-            });
-
-            for (final msg in recentMessages) {
-              DateTime? msgTime;
-              try {
-                msgTime = DateTime.parse(msg['date'].toString()).toUtc();
-              } catch (_) {}
-
-              final text = (msg['text'] ?? '').toString();
-              final tLower = text.toLowerCase();
-              final bool hasNegative = negativeMissileWords.any((nw) => tLower.contains(nw));
-
-              // Перевірка на тригери ракет / балістики: ТІЛЬКИ явні ракетні слова, '!!!!' або одне-два слова капсом без локацій
-              final bool isExplicitBallisticTrigger = !hasNegative && (
-                missileKeywords.any((mk) => tLower.contains(mk)) ||
-                RegExp(r'^(?:УВАГА|ЦІЛЬ|ПУСК|ВИХОДИ|ШВИДКІСНА|БАЛІСТИКА)[!\s⚠️]*$').hasMatch(text.trim()) ||
-                text.contains('!!!!')
-              );
-
-              if (isExplicitBallisticTrigger && msgTime != null) {
-                final windowEnd = msgTime.add(const Duration(minutes: 4));
-                if (activeBallisticUntil == null || windowEnd.isAfter(activeBallisticUntil)) {
-                  activeBallisticUntil = windowEnd;
-                }
-              }
-
-              final bool inBallisticWindow = msgTime != null &&
-                  activeBallisticUntil != null &&
-                  (msgTime.isBefore(activeBallisticUntil) || msgTime.isAtSameMomentAs(activeBallisticUntil));
-
-              final threats = (msg['threats'] as List?) ?? [];
-              final bool textHasMissile = !hasNegative && (
-                missileKeywords.any((mk) => tLower.contains(mk)) ||
-                inBallisticWindow
-              );
-
-              for (final t in threats) {
-                totalThreats++;
-                final tType = (t['type'] ?? 'shahed').toString().toLowerCase();
-                final tRaw = (t['rawText'] ?? '').toString().toLowerCase();
-
-                final bool isMissile = inBallisticWindow ||
-                    tType.contains('missile') ||
-                    tType.contains('ballistic') ||
-                    tType.contains('hypersonic') ||
-                    tType.contains('cruise') ||
-                    tType.contains('supersonic') ||
-                    tType == 'kab' ||
-                    textHasMissile ||
-                    (!negativeMissileWords.any((nw) => tRaw.contains(nw)) &&
-                        missileKeywords.any((mk) => tRaw.contains(mk)));
-
-                if (isMissile) {
-                  missileCount++;
-                } else {
-                  uavCount++;
-                }
-
-                final path = (t['path'] as List?) ?? [];
-                for (final loc in activeZones) {
-                  final double effectiveRadius = loc.radiusMeters + (_isNightWatchMode ? 3500.0 : 0.0);
-                  for (final p in path) {
-                    double? lat, lon;
-                    if (p is LatLng) {
-                      lat = p.latitude;
-                      lon = p.longitude;
-                    } else if (p is Map && p['lat'] != null && p['lon'] != null) {
-                      lat = (p['lat'] as num).toDouble();
-                      lon = (p['lon'] as num).toDouble();
-                    }
-                    if (lat != null && lon != null) {
-                      final dist = const Distance().as(LengthUnit.Meter, loc.point, LatLng(lat, lon));
-                      if (dist <= effectiveRadius) {
-                        threatenedZoneNames.add(loc.name);
-                        break;
-                      }
-                    }
-                  }
-                }
-              }
-
-              // Якщо в пості не було окремих parsed threats, але є ракетні слова або діє балістичне вікно:
-              if (threats.isEmpty && (textHasMissile || isExplicitBallisticTrigger || inBallisticWindow)) {
-                totalThreats++;
-                missileCount++;
-              }
-
-              if (ppoKeywords.any((pk) => tLower.contains(pk))) {
-                ppoMentions++;
-              }
-
-              if (msg['type'] == 'clear' || clearKeywords.any((ck) => tLower.contains(ck))) {
-                if (msgTime != null) {
-                  if (lastClearDt == null || msgTime.isAfter(lastClearDt)) {
-                    lastClearDt = msgTime;
-                  }
-                }
-              }
-            }
-
-            final String lastClearStr = lastClearDt != null
-                ? '${lastClearDt.toLocal().hour.toString().padLeft(2, '0')}:${lastClearDt.toLocal().minute.toString().padLeft(2, '0')}'
-                : 'Не зафіксовано';
-
-            final String zonesStatusStr = threatenedZoneNames.isEmpty
-                ? '🟢 Жодна ціль не наближалась до ваших зон безпеки'
-                : '⚠️ Зафіксовано прольоти поблизу: ${threatenedZoneNames.join(', ')}';
-
-            final String currentTimeStr = '${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}';
-
-            return Container(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(sheetContext).size.height * 0.88,
-              ),
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 16,
-                left: 16,
-                right: 16,
-                top: 12,
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 44,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 14),
-                        decoration: BoxDecoration(
-                          color: Colors.white24,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: Colors.amber.withValues(alpha: 0.15),
-                            shape: BoxShape.circle,
-                            border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.3)),
-                          ),
-                          child: const Icon(Icons.coffee, color: Colors.amberAccent, size: 22),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'Ранковий брифінг',
-                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-                              ),
-                              Text(
-                                'Нічна статистика • ДТЕК • Київпастранс ($currentTimeStr)',
-                                style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close, color: Colors.grey),
-                          onPressed: () => Navigator.pop(sheetContext),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 14),
-
-                    // БЛОК 1: 🛡️ Підсумки ночі
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1E1E28),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.purple.withValues(alpha: 0.25)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Row(
-                            children: [
-                              Icon(Icons.shield_outlined, color: Colors.purpleAccent, size: 18),
-                              SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  'Підсумки ночі (за останні 10 годин)',
-                                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              _buildDigestStatCard('Загроз', '$totalThreats', Icons.track_changes, Colors.amberAccent),
-                              const SizedBox(width: 6),
-                              _buildDigestStatCard('Шахеди', '$uavCount', Icons.flight, Colors.orangeAccent),
-                              const SizedBox(width: 6),
-                              _buildDigestStatCard('Ракети', '$missileCount', Icons.rocket_launch, Colors.redAccent),
-                              const SizedBox(width: 6),
-                              _buildDigestStatCard('ППО', '$ppoMentions', Icons.flare, Colors.purpleAccent),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
-                          Row(
-                            children: [
-                              Icon(Icons.access_time, color: Colors.grey.shade400, size: 14),
-                              const SizedBox(width: 6),
-                              Text(
-                                'Останній відбій у секторі: $lastClearStr',
-                                style: TextStyle(color: Colors.grey.shade300, fontSize: 12),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: threatenedZoneNames.isEmpty
-                                  ? Colors.greenAccent.withValues(alpha: 0.1)
-                                  : Colors.redAccent.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: threatenedZoneNames.isEmpty
-                                    ? Colors.greenAccent.withValues(alpha: 0.3)
-                                    : Colors.redAccent.withValues(alpha: 0.4),
-                              ),
-                            ),
-                            child: Text(
-                              zonesStatusStr,
-                              style: TextStyle(
-                                color: threatenedZoneNames.isEmpty ? Colors.greenAccent : Colors.redAccent,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-
-                    // БЛОК 2: ⚡ Стан енергетики
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1E1E28),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.amber.withValues(alpha: 0.25)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Row(
-                            children: [
-                              Icon(Icons.bolt, color: Colors.amberAccent, size: 18),
-                              SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  'Стан енергетики Києва (ДТЕК / КОВА)',
-                                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
-                          if (isLoadingNews) ...[
-                            const Center(
-                              child: Padding(
-                                padding: EdgeInsets.symmetric(vertical: 8),
-                                child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.amberAccent)),
-                              ),
-                            ),
-                          ] else if (energyNews.isNotEmpty) ...[
-                            ...energyNews.take(2).map((item) {
-                              final cleanItem = cleanHtmlString(item, maxLength: 3500);
-                              return _ExpandableNewsItem(
-                                text: cleanItem,
-                                bulletColor: Colors.amberAccent,
-                                style: TextStyle(color: Colors.grey.shade300, fontSize: 12, height: 1.3),
-                              );
-                            }),
-                          ] else ...[
-                            Text(
-                              '• Наразі повідомлень про екстрені відключення немає. Ситуація стабільна.',
-                              style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-
-                    // БЛОК 3: 🚋 Інфраструктура та транспорт
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1E1E28),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.cyan.withValues(alpha: 0.25)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Row(
-                            children: [
-                              Icon(Icons.tram, color: Colors.cyanAccent, size: 18),
-                              SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  'Транспорт та Святошин / Борщагівка',
-                                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 14),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
-                          if (isLoadingNews) ...[
-                            const Center(
-                              child: Padding(
-                                padding: EdgeInsets.symmetric(vertical: 8),
-                                child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.cyanAccent)),
-                              ),
-                            ),
-                          ] else if (transportNews.isNotEmpty) ...[
-                            ...transportNews.take(3).map((item) {
-                              final cleanItem = cleanHtmlString(item, maxLength: 3500);
-                              final bool isPriority = cleanItem.contains('[Святошин/Борщагівка]');
-                              return _ExpandableNewsItem(
-                                text: cleanItem,
-                                bulletColor: isPriority ? Colors.amberAccent : Colors.cyanAccent,
-                                style: TextStyle(
-                                  color: isPriority ? Colors.white : Colors.grey.shade300,
-                                  fontWeight: isPriority ? FontWeight.w500 : FontWeight.normal,
-                                  fontSize: 12,
-                                  height: 1.3,
-                                ),
-                              );
-                            }),
-                          ] else ...[
-                            Text(
-                              '• Громадський транспорт та швидкісний трамвай курсують у штатному режимі.',
-                              style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // КНОПКИ: Оновити та Скопіювати
-                    Row(
-                      children: [
-                        Expanded(
-                          flex: 5,
-                          child: OutlinedButton.icon(
-                            icon: const Icon(Icons.refresh, size: 18),
-                            label: const Text('Оновити'),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: Colors.white70,
-                              side: BorderSide(color: Colors.grey.shade700),
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                            ),
-                            onPressed: () {
-                              setSheetState(() {
-                                isLoadingNews = true;
-                                hasInitiatedFetch = false;
-                              });
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          flex: 6,
-                          child: ElevatedButton.icon(
-                            icon: const Icon(Icons.copy, size: 18),
-                            label: const Text('Скопіювати звіт'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.purpleAccent,
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                            ),
-                            onPressed: () async {
-                              final fullReport = StringBuffer();
-                              fullReport.writeln('☕ РАНКОВИЙ БРИФІНГ: КИЇВ ТА ОБЛАСТЬ ($currentTimeStr)');
-                              fullReport.writeln('\n🛡️ ПІДСУМКИ НОЧІ (за 10 год):');
-                              fullReport.writeln('• Зафіксовано загроз: $totalThreats');
-                              fullReport.writeln('• Шахеди: $uavCount');
-                              fullReport.writeln('• Ракети/Балістика: $missileCount');
-                              fullReport.writeln('• Робота ППО: $ppoMentions');
-                              fullReport.writeln('• Останній відбій: $lastClearStr');
-                              fullReport.writeln('• Зони безпеки: $zonesStatusStr');
-
-                              fullReport.writeln('\n⚡ СТАН ЕНЕРГЕТИКИ (ДТЕК):');
-                              if (energyNews.isNotEmpty) {
-                                for (final en in energyNews.take(2)) {
-                                  fullReport.writeln('• $en');
-                                }
-                              } else {
-                                fullReport.writeln('• Наразі повідомлень про екстрені відключення немає.');
-                              }
-
-                              fullReport.writeln('\n🚋 ТРАНСПОРТ ТА ІНФРАСТРУКТУРА:');
-                              if (transportNews.isNotEmpty) {
-                                for (final tn in transportNews.take(3)) {
-                                  fullReport.writeln('• $tn');
-                                }
-                              } else {
-                                fullReport.writeln('• Рух громадського транспорту у штатному режимі.');
-                              }
-
-                              fullReport.writeln('\nБезпечного та мирного дня! 🇺🇦');
-
-                              await Clipboard.setData(ClipboardData(text: fullReport.toString()));
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      '📋 Ранковий звіт успішно скопійовано!',
-                                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
-                                    ),
-                                    backgroundColor: Colors.purple,
-                                    duration: Duration(seconds: 2),
-                                  ),
-                                );
-                              }
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
+    showMorningDigestSheet(
+      context,
+      messages: ref.read(messagesProvider),
+      watchedLocations: ref.read(watchedLocationsProvider),
+      isNightWatchMode: _isNightWatchMode,
     );
   }
 
-  void _showWatchedLocationsSheet(BuildContext context) async {
-    final searchCtrl = TextEditingController();
-    final nameCtrl = TextEditingController();
-    double radiusKm = 4.0;
-    List<Map<String, dynamic>> searchResults = [];
-    bool isSearching = false;
-    bool isAddingNew = false;
-    Map<String, dynamic>? selectedResult;
-
-    await showModalBottomSheet(
+  void _showWatchedLocationsSheet(BuildContext context) {
+    showWatchedLocationsSheet(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF1E1E1E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (sheetContext, setSheetState) {
-            final watchedList = ref.watch(watchedLocationsProvider);
-
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 16,
-                left: 16,
-                right: 16,
-                top: 12,
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 40,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 12),
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade600,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Row(
-                          children: [
-                            Icon(Icons.shield_outlined, color: Colors.purpleAccent, size: 22),
-                            SizedBox(width: 8),
-                            Text(
-                              'Мої зони безпеки',
-                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-                            ),
-                          ],
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close, color: Colors.grey),
-                          onPressed: () => Navigator.pop(sheetContext),
-                        )
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-
-                    if (!kIsWeb && Platform.isAndroid) ...[
-                      FutureBuilder<bool>(
-                        future: _isIgnoringBatteryOptimizations(),
-                        builder: (context, snapshot) {
-                          final isIgnored = snapshot.data ?? false;
-                          return InkWell(
-                            onTap: () async {
-                              await _requestIgnoreBatteryOptimizations();
-                              setSheetState(() {});
-                            },
-                            borderRadius: BorderRadius.circular(10),
-                            child: Container(
-                              margin: const EdgeInsets.only(bottom: 12),
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                              decoration: BoxDecoration(
-                                color: isIgnored ? const Color(0xFF1B3B22) : const Color(0xFF3E2723),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color: isIgnored ? Colors.greenAccent.withValues(alpha: 0.6) : Colors.amberAccent.withValues(alpha: 0.8),
-                                  width: 1.2,
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    isIgnored ? Icons.bolt : Icons.battery_alert_rounded,
-                                    color: isIgnored ? Colors.greenAccent : Colors.amberAccent,
-                                    size: 22,
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        const Text(
-                                          '⚡ Робота у фоні без обмежень (Android 17)',
-                                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12.5),
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          isIgnored
-                                              ? 'Дозволено: надійний радар та сповіщення'
-                                              : 'Натисніть для вимкнення обмежень батареї',
-                                          style: TextStyle(
-                                            color: isIgnored ? Colors.greenAccent.shade100 : Colors.amber.shade200,
-                                            fontSize: 10.5,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  Icon(
-                                    isIgnored ? Icons.check_circle : Icons.chevron_right,
-                                    color: isIgnored ? Colors.greenAccent : Colors.amberAccent,
-                                    size: 20,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ],
-
-                    if (watchedList.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 8.0),
-                        child: Text('Немає доданих зон безпеки', style: TextStyle(color: Colors.grey)),
-                      )
-                    else
-                      ...watchedList.map((loc) {
-                        return Container(
-                          margin: const EdgeInsets.only(bottom: 8),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF2A2A2A),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: loc.enabled ? Colors.purpleAccent.withValues(alpha: 0.4) : Colors.transparent,
-                              width: 1,
-                            ),
-                          ),
-                          child: ListTile(
-                            dense: true,
-                            leading: IconButton(
-                              icon: const Icon(Icons.my_location, color: Colors.purpleAccent, size: 20),
-                              tooltip: 'Показати на мапі',
-                              onPressed: () {
-                                _mapController.move(loc.point, 13.5);
-                                Navigator.pop(sheetContext);
-                              },
-                            ),
-                            title: Text(loc.name, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-                            subtitle: Text(
-                              '${loc.address}\nРадіус: ${(loc.radiusMeters / 1000).toStringAsFixed(1)} км',
-                              style: TextStyle(color: Colors.grey.shade400, fontSize: 11),
-                            ),
-                            isThreeLine: loc.address.isNotEmpty,
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Switch(
-                                  value: loc.enabled,
-                                  activeThumbColor: Colors.purpleAccent,
-                                  onChanged: (val) {
-                                    ref.read(watchedLocationsProvider.notifier).toggleLocation(loc.id);
-                                  },
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
-                                  tooltip: 'Видалити',
-                                  onPressed: () {
-                                    ref.read(watchedLocationsProvider.notifier).removeLocation(loc.id);
-                                  },
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      }),
-
-                    if (!isAddingNew) ...[
-                      const SizedBox(height: 12),
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          icon: const Icon(Icons.add_location_alt_outlined),
-                          label: const Text('Додати нову зону безпеки'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.purpleAccent,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          ),
-                          onPressed: () {
-                            setSheetState(() => isAddingNew = true);
-                          },
-                        ),
-                      ),
-                    ] else ...[
-                      const Divider(color: Colors.grey, height: 24),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text(
-                            'Додати нову зону безпеки',
-                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.purpleAccent),
-                          ),
-                          TextButton.icon(
-                            icon: const Icon(Icons.close, size: 16, color: Colors.grey),
-                            label: const Text('Скасувати', style: TextStyle(color: Colors.grey)),
-                            onPressed: () {
-                              setSheetState(() {
-                                isAddingNew = false;
-                                searchResults = [];
-                                selectedResult = null;
-                                searchCtrl.clear();
-                                nameCtrl.clear();
-                              });
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: searchCtrl,
-                              style: const TextStyle(color: Colors.white, fontSize: 13),
-                              decoration: InputDecoration(
-                                hintText: 'Введіть вулицю або адресу в Києві...',
-                                hintStyle: TextStyle(color: Colors.grey.shade500, fontSize: 13),
-                                prefixIcon: const Icon(Icons.search, color: Colors.purpleAccent, size: 20),
-                                filled: true,
-                                fillColor: const Color(0xFF2A2A2A),
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                              ),
-                              onSubmitted: (val) async {
-                                if (val.trim().isEmpty) return;
-                                setSheetState(() => isSearching = true);
-                                final results = await searchStreetAddress(val);
-                                setSheetState(() {
-                                  isSearching = false;
-                                  searchResults = results;
-                                });
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.purpleAccent,
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                            ),
-                            onPressed: isSearching ? null : () async {
-                              if (searchCtrl.text.trim().isEmpty) return;
-                              setSheetState(() => isSearching = true);
-                              final results = await searchStreetAddress(searchCtrl.text);
-                              setSheetState(() {
-                                isSearching = false;
-                                searchResults = results;
-                              });
-                            },
-                            child: isSearching
-                                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                                : const Text('Пошук'),
-                          ),
-                        ],
-                      ),
-
-                      if (searchResults.isNotEmpty)
-                        Container(
-                          margin: const EdgeInsets.only(top: 8),
-                          padding: const EdgeInsets.all(4),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF262626),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.purpleAccent.withValues(alpha: 0.5)),
-                          ),
-                          child: Column(
-                            children: searchResults.map((res) {
-                              return ListTile(
-                                dense: true,
-                                leading: const Icon(Icons.location_on, color: Colors.purpleAccent, size: 18),
-                                title: Text(
-                                  res['display_name'].toString(),
-                                  style: const TextStyle(color: Colors.white, fontSize: 12),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                onTap: () {
-                                  setSheetState(() {
-                                    selectedResult = res;
-                                    searchCtrl.text = res['display_name'].toString();
-                                    searchResults = [];
-                                    if (nameCtrl.text.isEmpty) {
-                                      nameCtrl.text = 'Моя зона';
-                                    }
-                                  });
-                                },
-                              );
-                            }).toList(),
-                          ),
-                        ),
-
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: nameCtrl,
-                        style: const TextStyle(color: Colors.white, fontSize: 13),
-                        decoration: InputDecoration(
-                          hintText: 'Коротка назва (напр. Дім, Робота, Офіс)',
-                          hintStyle: TextStyle(color: Colors.grey.shade500, fontSize: 13),
-                          prefixIcon: const Icon(Icons.bookmark_outline, color: Colors.purpleAccent, size: 20),
-                          filled: true,
-                          fillColor: const Color(0xFF2A2A2A),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                        ),
-                      ),
-
-                      const SizedBox(height: 12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text('Радіус тривоги:', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                          Text(
-                            '${radiusKm.toStringAsFixed(1)} км',
-                            style: const TextStyle(color: Colors.purpleAccent, fontWeight: FontWeight.bold, fontSize: 14),
-                          ),
-                        ],
-                      ),
-                      Slider(
-                        value: radiusKm,
-                        min: 1.0,
-                        max: 10.0,
-                        divisions: 18,
-                        activeColor: Colors.purpleAccent,
-                        inactiveColor: Colors.grey.shade700,
-                        label: '${radiusKm.toStringAsFixed(1)} км',
-                        onChanged: (val) {
-                          setSheetState(() => radiusKm = val);
-                        },
-                      ),
-
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              icon: const Icon(Icons.check),
-                              label: const Text('Зберегти зону'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.purpleAccent,
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(vertical: 12),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                              ),
-                              onPressed: () {
-                                if (selectedResult == null && searchCtrl.text.trim().isEmpty) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text(
-                                        'Спочатку знайдіть та виберіть адресу!',
-                                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
-                                      ),
-                                    ),
-                                  );
-                                  return;
-                                }
-                                final name = nameCtrl.text.trim().isEmpty ? 'Моя зона' : nameCtrl.text.trim();
-                                final lat = selectedResult != null ? (selectedResult!['lat'] as double) : 50.4501;
-                                final lon = selectedResult != null ? (selectedResult!['lon'] as double) : 30.5234;
-                                final address = selectedResult != null ? selectedResult!['display_name'].toString() : searchCtrl.text.trim();
-
-                                final newLoc = WatchedLocation(
-                                  id: DateTime.now().millisecondsSinceEpoch.toString(),
-                                  name: name,
-                                  address: address,
-                                  point: LatLng(lat, lon),
-                                  radiusMeters: radiusKm * 1000.0,
-                                  enabled: true,
-                                );
-
-                                ref.read(watchedLocationsProvider.notifier).addLocation(newLoc);
-                                _mapController.move(newLoc.point, 13.5);
-                                Navigator.pop(sheetContext);
-
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      'Зону "$name" успішно додано!',
-                                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
-                                    ),
-                                    backgroundColor: Colors.purple,
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          OutlinedButton(
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: Colors.grey,
-                              side: const BorderSide(color: Colors.grey),
-                              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                            ),
-                            onPressed: () {
-                              setSheetState(() {
-                                isAddingNew = false;
-                                searchResults = [];
-                                selectedResult = null;
-                                searchCtrl.clear();
-                                nameCtrl.clear();
-                              });
-                            },
-                            child: const Text('Скасувати'),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
+      ref: ref,
+      mapController: _mapController,
+      watchedLocationsProvider: watchedLocationsProvider,
     );
-
-    searchCtrl.dispose();
-    nameCtrl.dispose();
   }
 
-  void _showAddPointFromMapDialog(BuildContext context, LatLng point) async {
-    final nameCtrl = TextEditingController(text: 'Моя точка');
-    double radiusKm = 4.0;
-
-    await showModalBottomSheet(
+  void _showAddPointFromMapDialog(BuildContext context, LatLng point) {
+    showAddPointFromMapDialog(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF1E1E1E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetContext) {
-        return StatefulBuilder(
-          builder: (ctx, setDialogState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 16,
-                left: 16,
-                right: 16,
-                top: 16,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Center(
-                    child: Container(
-                      width: 40,
-                      height: 4,
-                      margin: const EdgeInsets.only(bottom: 12),
-                      decoration: BoxDecoration(color: Colors.grey.shade600, borderRadius: BorderRadius.circular(2)),
-                    ),
-                  ),
-                  const Row(
-                    children: [
-                      Icon(Icons.add_location_alt, color: Colors.purpleAccent, size: 22),
-                      SizedBox(width: 8),
-                      Text(
-                        'Додати зону з точки на мапі',
-                        style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Colors.white),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'Координати: ${point.latitude.toStringAsFixed(4)}, ${point.longitude.toStringAsFixed(4)}',
-                    style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: nameCtrl,
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
-                    decoration: InputDecoration(
-                      hintText: 'Назва зони (наприклад, Дача, Склад)',
-                      hintStyle: TextStyle(color: Colors.grey.shade500, fontSize: 13),
-                      prefixIcon: const Icon(Icons.bookmark_outline, color: Colors.purpleAccent, size: 20),
-                      filled: true,
-                      fillColor: const Color(0xFF2A2A2A),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Радіус тривоги:', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                      Text(
-                        '${radiusKm.toStringAsFixed(1)} км',
-                        style: const TextStyle(color: Colors.purpleAccent, fontWeight: FontWeight.bold, fontSize: 14),
-                      ),
-                    ],
-                  ),
-                  Slider(
-                    value: radiusKm,
-                    min: 1.0,
-                    max: 10.0,
-                    divisions: 18,
-                    activeColor: Colors.purpleAccent,
-                    inactiveColor: Colors.grey.shade700,
-                    label: '${radiusKm.toStringAsFixed(1)} км',
-                    onChanged: (val) {
-                      setDialogState(() => radiusKm = val);
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      icon: const Icon(Icons.check),
-                      label: const Text('Зберегти зону'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.purpleAccent,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      ),
-                      onPressed: () {
-                        final name = nameCtrl.text.trim().isEmpty ? 'Точка на карті' : nameCtrl.text.trim();
-                        final newLoc = WatchedLocation(
-                          id: DateTime.now().millisecondsSinceEpoch.toString(),
-                          name: name,
-                          address: 'Точка на карті (${point.latitude.toStringAsFixed(3)}, ${point.longitude.toStringAsFixed(3)})',
-                          point: point,
-                          radiusMeters: radiusKm * 1000.0,
-                          enabled: true,
-                        );
-                        ref.read(watchedLocationsProvider.notifier).addLocation(newLoc);
-                        Navigator.pop(sheetContext);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              'Зону "$name" успішно додано!',
-                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
-                            ),
-                            backgroundColor: Colors.purple,
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
+      point: point,
+      ref: ref,
+      watchedLocationsProvider: watchedLocationsProvider,
     );
-
-    nameCtrl.dispose();
   }
 
   @override
@@ -4615,6 +1705,29 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
             icon: const Icon(Icons.edit_location_alt_outlined, color: Colors.purpleAccent),
             tooltip: 'Мої зони безпеки',
             onPressed: () => _showWatchedLocationsSheet(context),
+          ),
+          IconButton(
+            icon: Icon(VoiceAlertService.instance.isEnabled ? Icons.record_voice_over : Icons.voice_over_off),
+            color: VoiceAlertService.instance.isEnabled ? Colors.cyanAccent : Colors.grey,
+            tooltip: VoiceAlertService.instance.isEnabled ? "Голосовий диктор (УВІМКНЕНО)" : "Голосовий диктор (Вимкнено)",
+            onPressed: () async {
+              await VoiceAlertService.instance.setEnabled(!VoiceAlertService.instance.isEnabled);
+              if (!mounted) return;
+              setState(() {});
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    VoiceAlertService.instance.isEnabled
+                        ? '🔊 Голосовий диктор увімкнено! Сповіщення озвучуватимуться українською.'
+                        : '🔇 Голосовий диктор вимкнено.',
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+                  ),
+                  duration: const Duration(seconds: 2),
+                  backgroundColor: VoiceAlertService.instance.isEnabled ? const Color(0xFF004D40) : const Color(0xFF2C2C34),
+                ),
+              );
+            },
           ),
           IconButton(
             icon: Icon(isTestMode ? Icons.bug_report : Icons.bug_report_outlined),
@@ -5669,6 +2782,16 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       HapticFeedback.heavyImpact();
                                       SystemSound.play(SystemSoundType.alert);
                                     }
+
+                                    final double dKm = directDist / 1000.0;
+                                    final double etaMins = (speedMs > 5.0 ? (directDist / speedMs / 60.0) : 0.0);
+                                    VoiceAlertService.instance.announceThreatNearZone(
+                                      threatKey: threatKey,
+                                      threatType: t['type']?.toString() ?? 'shahed',
+                                      zoneName: loc.name,
+                                      distanceKm: dKm,
+                                      etaMinutes: etaMins,
+                                    );
                                   }
                                 }
                               }
@@ -5684,11 +2807,14 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             overallStatus = 2;
                           }
 
-                          if (_isNightWatchMode && overallStatus == 3) {
-                            final threatKey = 'night_watch_ballistic:${threats.map((t) => t['msgId']).join(',')}';
+                          if (overallStatus == 3) {
+                            final threatKey = 'ballistic_alert:${threats.map((t) => t['msgId']).join(',')}';
                             if (!_alertedLocationThreatKeys.contains(threatKey)) {
                               _alertedLocationThreatKeys.add(threatKey);
-                              _triggerNightWatchAlarm();
+                              if (_isNightWatchMode) {
+                                _triggerNightWatchAlarm();
+                              }
+                              VoiceAlertService.instance.announceBallistics();
                             }
                           }
 
@@ -5697,6 +2823,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                               (_nightWatchDismissedUntil == null || now.isAfter(_nightWatchDismissedUntil!));
 
                           final strategicAlert = _analyzeStrategicThreat(messages, now);
+                          final launchEvent = detectStrategicLaunch(messages, now: now);
+                          final bool isLaunchDismissed = _dismissedLaunchTimestamp != null &&
+                              launchEvent != null &&
+                              _dismissedLaunchTimestamp == launchEvent.timestamp;
 
                           Color statusColor = Colors.green;
                           String statusText = "Безпечно";
@@ -5712,6 +2842,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                           WidgetsBinding.instance.addPostFrameCallback((_) {
                             if (mounted) {
                               _scheduleWidgetSync(alerts, threats, messages);
+                              LiveRadarNotificationService.instance.updateRadarStatus(
+                                threats: threats,
+                                watchedLocations: watchedLocations,
+                                isAlertKyiv: alerts['м. Київ'] == true,
+                                isAlertRegion: alerts['Київська область'] == true,
+                              );
                               if (isWakeupBannerVisible) {
                                 _triggerNightWatchAlarm();
                               }
@@ -6189,7 +3325,18 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   },
                                 ),
                               ],
-                              if (strategicAlert != null)
+                              if (launchEvent != null && !isLaunchDismissed)
+                                Positioned(
+                                  top: (isWakeupBannerVisible ? 104 : 60) +
+                                      (closestDangerThreat != null && dangerLocation != null ? 52 : 0) +
+                                      (anyAlert && northThreatLabel != null ? 36 : 0),
+                                  left: 16,
+                                  right: 16,
+                                  child: Center(
+                                    child: _buildStrategicLaunchBanner(launchEvent, now),
+                                  ),
+                                )
+                              else if (strategicAlert != null)
                                 Positioned(
                                   top: (isWakeupBannerVisible ? 104 : 60) +
                                       (closestDangerThreat != null && dangerLocation != null ? 52 : 0) +
@@ -7077,99 +4224,6 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
     }
     result.add(points.last);
     return result;
-  }
-
-  double _calculateBearing(LatLng from, LatLng to) {
-    final double lat1 = from.latitude * math.pi / 180.0;
-    final double lon1 = from.longitude * math.pi / 180.0;
-    final double lat2 = to.latitude * math.pi / 180.0;
-    final double lon2 = to.longitude * math.pi / 180.0;
-    final double dLon = lon2 - lon1;
-    final double y = math.sin(dLon) * math.cos(lat2);
-    final double x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dLon);
-    return math.atan2(y, x);
-  }
-
-  Polygon _buildForecastCone(LatLng currentPos, double bearing, double speedMs, Color color, bool isUav) {
-    final double coneDistMeters = (speedMs * 150.0).clamp(1500.0, isUav ? 8000.0 : 25000.0);
-    const double halfAngleRad = 16.0 * math.pi / 180.0;
-    const double earthRadius = 6378137.0;
-    final double d = coneDistMeters / earthRadius;
-    final double lat1 = currentPos.latitude * math.pi / 180.0;
-    final double lon1 = currentPos.longitude * math.pi / 180.0;
-
-    final List<LatLng> conePoints = [currentPos];
-    const int arcSegments = 8;
-    for (int s = 0; s <= arcSegments; s++) {
-      final double relAngle = -halfAngleRad + (2.0 * halfAngleRad * s / arcSegments);
-      final double b = bearing + relAngle;
-      final double lat2 = math.asin(math.sin(lat1) * math.cos(d) + math.cos(lat1) * math.sin(d) * math.cos(b));
-      final double lon2 = lon1 + math.atan2(math.sin(b) * math.sin(d) * math.cos(lat1), math.cos(d) - math.sin(lat1) * math.sin(lat2));
-      conePoints.add(LatLng(lat2 * 180.0 / math.pi, lon2 * 180.0 / math.pi));
-    }
-    conePoints.add(currentPos);
-
-    return Polygon(
-      points: conePoints,
-      color: color.withValues(alpha: 0.10),
-      borderColor: color.withValues(alpha: 0.35),
-      borderStrokeWidth: 1.0,
-    );
-  }
-
-  (LatLng, double) _calculateCirclingPosAndAngle(LatLng center, double timeSec) {
-    const double iconRotationOffset = math.pi / 4; // Іконки дивляться праворуч-вгору (45°)
-    final double omega = 2.0 * math.pi / 25.0; // Повний оберт за 25 секунд
-    final double angle = omega * (timeSec % 25.0);
-
-    // Радіус орбіти: ~2.5 км (0.016 lat, 0.026 lon)
-    final double lat = center.latitude + 0.016 * math.sin(angle);
-    final double lon = center.longitude + 0.026 * math.cos(angle);
-
-    final double dyScreen = -0.016 * math.cos(angle);
-    final double dxScreen = -0.026 * math.sin(angle);
-    final double dxCorrected = math.cos(math.pi / 180.0 * center.latitude) * dxScreen;
-    final double angleRad = math.atan2(dyScreen, dxCorrected);
-
-    return (LatLng(lat, lon), angleRad + iconRotationOffset);
-  }
-
-  (LatLng, double) _interpolatePosAndAngle(List<LatLng> path, double fraction) {
-    const double iconRotationOffset = math.pi / 4; // Іконки дивляться праворуч-вгору (45°)
-    if (path.length == 1) {
-      return (path.first, 0.0);
-    }
-    if (fraction >= 1.0) {
-      LatLng center = path.last;
-      double angleRad = 0.0;
-      if (path.length >= 2) {
-        final start = path[path.length - 2];
-        final end = path.last;
-        angleRad = math.atan2(start.latitude - end.latitude, math.cos(math.pi / 180.0 * start.latitude) * (end.longitude - start.longitude));
-        return (center, angleRad + iconRotationOffset);
-      }
-      return (center, 0.0);
-    }
-
-    final clamped = fraction.clamp(0.0, 1.0);
-    final totalSegments = path.length - 1;
-    final exactSegment = clamped * totalSegments;
-    final segIndex = exactSegment.floor().clamp(0, totalSegments - 1);
-    final segFraction = exactSegment - segIndex;
-
-    final start = path[segIndex];
-    final end = path[segIndex + 1];
-    final pos = LatLng(
-      start.latitude + (end.latitude - start.latitude) * segFraction,
-      start.longitude + (end.longitude - start.longitude) * segFraction,
-    );
-
-    final dyScreen = start.latitude - end.latitude;
-    final dxScreen = end.longitude - start.longitude;
-    final dxCorrected = math.cos(math.pi / 180.0 * start.latitude) * dxScreen;
-    final angleRad = math.atan2(dyScreen, dxCorrected);
-
-    return (pos, angleRad + iconRotationOffset);
   }
 
   @override
