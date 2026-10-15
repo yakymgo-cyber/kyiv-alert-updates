@@ -427,7 +427,7 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
     final textWithoutReply = text.replaceAll(RegExp(r'^↪️.*?\n'), '');
     final cleanLower = textWithoutReply.toLowerCase();
 
-    final bool hasMultipleDrones = RegExp(r'(?:^|\s)(?:[1-9]\s*(?:х|x|шт)?|ще один|кілька|групи|декілька|шахеди|бпла|цілі|перший|другий)(?:\s|$)').hasMatch(cleanLower);
+    final bool hasMultipleDrones = RegExp(r'(?:^|\s)(?:[1-9]\s*(?:х|x|шт)?|ще один|кілька|групи|декілька|шахеди|бпла|цілі|перший|другий|наступн\w*)(?:\s|$)').hasMatch(cleanLower);
     final bool hasSplitters = textWithoutReply.contains(' та ') || textWithoutReply.contains(' і ') || textWithoutReply.contains(',');
 
     // Розбиваємо текст перед словами Другий, Третій, 2-й, 3-й, Той що на окремі рядки
@@ -450,7 +450,25 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
     for (final line in lines) {
       final stripped = line.trim();
       if (stripped.isEmpty) continue;
-      final lineLower = ' ${stripped.toLowerCase()} ';
+
+      // 1. Пропускаємо чисті рядки-заголовки / звернення до аудиторії (наприклад "Столиця наступні 3", "Столиця увага", "Київщина наступні 2", "Область, увага")
+      final bool isHeaderLine = RegExp(
+        r'^(?:столиц[яіею]|київ|київщин[аі]|област[іь])\s*(?:[:!,—–-]|наступн\w*|уваг\w*|обережн\w*|в укритт\w*|готуй\w*|працю\w*|чутн\w*|гучн\w*|зараз|без панік\w*|тривог\w*|відбій|\s|\d+)*$',
+        caseSensitive: false,
+      ).hasMatch(stripped);
+      if (isHeaderLine) continue;
+
+      // 2. Якщо звернення на початку рядка з цілями (наприклад "Столиця! 1 на Вишгород" або "Столиця наступні: Вишгород, Бориспіль") — вирізаємо звернення
+      String workingLine = stripped.replaceFirst(
+        RegExp(r'^(?:столиц[яіею]|київ|київщин[аі]|област[іь])\s*[:!,—–-]?\s+(?:наступн\w*(?:\s*[:\d]+)?|уваг\w*|обережн\w*|в укритт\w*|готуй\w*|працю\w*|чутн\w*|гучн\w*|зараз|без панік\w*|тривог\w*|відбій)\s*[:!,—–-]?\s*', caseSensitive: false),
+        '',
+      ).replaceFirst(
+        RegExp(r'^(?:столиц[яіею]|київ|київщин[аі]|област[іь])\s*[:!,—–-]\s*', caseSensitive: false),
+        '',
+      );
+      if (workingLine.trim().isEmpty) continue;
+
+      final lineLower = ' ${workingLine.toLowerCase()} ';
       if (negations.any((n) => lineLower.contains(n))) continue;
 
       // 2. Фільтр сусідніх та далеких регіонів
@@ -477,8 +495,8 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
         continue;
       }
 
-      final headerCheck = stripped.toLowerCase().replaceAll(RegExp(r'[^а-яіїєґa-z]'), '');
-      if (headerCheck == 'київщина' || headerCheck == 'київ' || headerCheck == 'київськаобласть' || headerCheck == 'київтаобласть') {
+      final headerCheck = workingLine.toLowerCase().replaceAll(RegExp(r'[^а-яіїєґa-z]'), '');
+      if (headerCheck == 'київщина' || headerCheck == 'київ' || headerCheck == 'київськаобласть' || headerCheck == 'київтаобласть' || headerCheck == 'столиця') {
         continue;
       }
 
@@ -501,6 +519,41 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
             } else if (key == 'море') {
               final prefix = searchLine.substring(math.max(0, idx - 10), idx).toLowerCase();
               if (prefix.contains('чорн')) {
+                isFalseMatch = true;
+              }
+            } else if (key == 'столиц') {
+              final prefix = searchLine.substring(math.max(0, idx - 30), idx).toLowerCase().trim();
+              final suffix = searchLine.substring(idx + key.length, math.min(searchLine.length, idx + key.length + 30)).toLowerCase().trim();
+
+              final bool hasDirectionalPrefix = prefix.endsWith('на') ||
+                  prefix.endsWith('до') ||
+                  prefix.endsWith('бік') ||
+                  prefix.endsWith('напрямку') ||
+                  prefix.endsWith('напрямок') ||
+                  prefix.endsWith('курсом') ||
+                  prefix.endsWith('вектор') ||
+                  prefix.endsWith('вектором') ||
+                  prefix.endsWith('над') ||
+                  prefix.endsWith('підлітає') ||
+                  prefix.endsWith('заходить') ||
+                  prefix.endsWith('рухається') ||
+                  prefix.endsWith('повз') ||
+                  prefix.endsWith('біля') ||
+                  prefix.endsWith('район') ||
+                  prefix.endsWith('->') ||
+                  prefix.endsWith('—>') ||
+                  prefix.endsWith('>');
+
+              final bool hasDirectionalSuffix = suffix.startsWith('->') ||
+                  suffix.startsWith('—>') ||
+                  suffix.startsWith('>') ||
+                  suffix.startsWith('з півдня') ||
+                  suffix.startsWith('з півночі') ||
+                  suffix.startsWith('зі сходу') ||
+                  suffix.startsWith('з заходу');
+
+              // Якщо це просто звернення до читачів (наприклад "Столиця наступні 3", "Столиця увага", "Столиця!") — це НЕ ціль!
+              if (!hasDirectionalPrefix && !hasDirectionalSuffix) {
                 isFalseMatch = true;
               }
             }
@@ -825,18 +878,51 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
           ? lineThreat['label']
           : (globalThreat['label'] ?? _getDefaultThreatLabel(effectiveType));
 
-      for (int c = 0; c < count; c++) {
-        parsed.add({
-          'type': effectiveType,
-          'speed': effectiveSpeed,
-          'label': effectiveLabel,
-          'path': List<Map<String, dynamic>>.from(path),
-          'isCircling': isCircling,
-          'altitude': altitudeStr,
-          'altitudeMeters': lineAlt,
-          'isDescending': isDescending,
-          'orderTag': lineOrderTag,
-        });
+      final bool hasTrajectoryIndicators = lineLower.contains('->') ||
+          lineLower.contains('—>') ||
+          lineLower.contains('-->') ||
+          lineLower.contains('>') ||
+          lineLower.contains('через') ||
+          lineLower.contains('повз') ||
+          lineLower.contains('транзитом') ||
+          lineLower.contains('курсом') ||
+          lineLower.contains('вектор') ||
+          lineLower.contains('в бік') ||
+          lineLower.contains('у бік') ||
+          lineLower.contains('напрямк') ||
+          lineLower.contains('заходить') ||
+          lineLower.contains('підлітає') ||
+          RegExp(r'\b(?:з|від|із)\s+[а-яіїєґa-z0-9\s]+?\s+на\b', caseSensitive: false).hasMatch(lineLower);
+
+      final bool isSeparateTargetsList = !hasTrajectoryIndicators && (hasMultipleDrones || path.length >= 3);
+      if (isSeparateTargetsList) {
+        for (final loc in path) {
+          parsed.add({
+            'type': effectiveType,
+            'speed': effectiveSpeed,
+            'label': effectiveLabel,
+            'path': [Map<String, dynamic>.from(loc)],
+            'isCircling': isCircling,
+            'altitude': altitudeStr,
+            'altitudeMeters': lineAlt,
+            'isDescending': isDescending,
+            'orderTag': lineOrderTag,
+          });
+        }
+      } else {
+        for (int c = 0; c < count; c++) {
+          parsed.add({
+            'type': effectiveType,
+            'speed': effectiveSpeed,
+            'label': effectiveLabel,
+            'path': List<Map<String, dynamic>>.from(path),
+            'isCircling': isCircling,
+            'altitude': altitudeStr,
+            'altitudeMeters': lineAlt,
+            'isDescending': isDescending,
+            'orderTag': lineOrderTag,
+          });
+        }
       }
     }
 

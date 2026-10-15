@@ -418,7 +418,56 @@ void main() {
       expect(isResurrected, isTrue);
     });
   });
+
+  group('Release v1.2.26: Stolitsia Vocative / Header Filter & Multi-Location Split', () {
+    test('Vocative header + list of separate targets without Stolitsia target', () {
+      final text = '''Столиця наступні 3
+Вишгород Гостомель Боря Обухів
+І далі по руху обережно''';
+      final threats = ThreatParser.parseLocalThreats(text);
+      expect(threats.length, equals(4));
+      expect(threats.any((t) => (t['path'] as List).any((p) => p['name'].toString().contains('Столиц'))), isFalse);
+      expect((threats[0]['path'] as List).first['name'], equals('Вишгород'));
+      expect((threats[1]['path'] as List).first['name'], equals('Гостомель'));
+      expect((threats[2]['path'] as List).first['name'], equals('Бориспіль'));
+      expect((threats[3]['path'] as List).first['name'], equals('Обухів'));
+    });
+
+    test('Vocative prefix on same line does not produce Stolitsia target', () {
+      final text = 'Столиця, увага! 1 на Вишгород';
+      final threats = ThreatParser.parseLocalThreats(text);
+      expect(threats.length, equals(1));
+      expect(threats.any((t) => (t['path'] as List).any((p) => p['name'].toString().contains('Столиц'))), isFalse);
+      expect((threats[0]['path'] as List).first['name'], equals('Вишгород'));
+    });
+
+    test('Directional destination TO capital ("курс на столицю", "в бік столиці") parses Stolitsia', () {
+      final text1 = 'Шахед з півночі курс на столицю';
+      final threats1 = ThreatParser.parseLocalThreats(text1);
+      expect(threats1.length, equals(1));
+      expect(threats1.any((t) => (t['path'] as List).any((p) => p['name'].toString().contains('Столиц'))), isTrue);
+
+      final text2 = 'Один в бік столиці через Вишгород';
+      final threats2 = ThreatParser.parseLocalThreats(text2);
+      expect(threats2.length, equals(1));
+      expect((threats2[0]['path'] as List).length, equals(2));
+      expect(threats2.any((t) => (t['path'] as List).any((p) => p['name'].toString().contains('Столиц'))), isTrue);
+    });
+
+    test('True trajectory with "через" and "->" is preserved as single path', () {
+      final text1 = 'з Вишгорода через Гостомель на Обухів';
+      final threats1 = ThreatParser.parseLocalThreats(text1);
+      expect(threats1.length, equals(1));
+      expect((threats1[0]['path'] as List).length, equals(3));
+
+      final text2 = 'Вишгород -> Гостомель -> Обухів';
+      final threats2 = ThreatParser.parseLocalThreats(text2);
+      expect(threats2.length, equals(1));
+      expect((threats2[0]['path'] as List).length, equals(3));
+    });
+  });
 }
+
 
 
 

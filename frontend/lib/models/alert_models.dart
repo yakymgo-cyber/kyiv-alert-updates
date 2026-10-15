@@ -2,8 +2,8 @@ import 'dart:math' as math;
 import 'package:latlong2/latlong.dart';
 
 /// Базові константи версії додатку за замовчуванням
-const int kDefaultVersionCode = 28;
-const String kDefaultVersionName = '1.2.25';
+const int kDefaultVersionCode = 29;
+const String kDefaultVersionName = '1.2.26';
 
 /// Модель зони спостереження (Зона безпеки)
 class WatchedLocation {
