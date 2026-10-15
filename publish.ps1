@@ -1,4 +1,4 @@
-param (
+﻿param (
     [string]$Changelog = "Оновлення радара та бази локацій"
 )
 
@@ -67,6 +67,15 @@ if (Test-Path $pubspecPath) {
     $pubspecContent = [System.IO.File]::ReadAllText($pubspecPath, [System.Text.Encoding]::UTF8)
     $pubspecContent = [regex]::Replace($pubspecContent, 'version:\s*\d+\.\d+\.\d+\+\d+', "version: $newName+$newCode")
     [System.IO.File]::WriteAllText($pubspecPath, $pubspecContent, $utf8NoBom)
+}
+
+# Оновлення frontend/lib/models/alert_models.dart
+$alertModelsPath = Join-Path $rootDir "frontend/lib/models/alert_models.dart"
+if (Test-Path $alertModelsPath) {
+    $alertModelsContent = [System.IO.File]::ReadAllText($alertModelsPath, [System.Text.Encoding]::UTF8)
+    $alertModelsContent = [regex]::Replace($alertModelsContent, 'const int kDefaultVersionCode = \d+;', "const int kDefaultVersionCode = $newCode;")
+    $alertModelsContent = [regex]::Replace($alertModelsContent, "const String kDefaultVersionName = '[^']+';", "const String kDefaultVersionName = '$newName';")
+    [System.IO.File]::WriteAllText($alertModelsPath, $alertModelsContent, $utf8NoBom)
 }
 
 # Оновлення backend/main.py (дефолтний конфіг)

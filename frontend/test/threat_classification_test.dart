@@ -411,11 +411,11 @@ void main() {
       expect(getThreatTtlSeconds('missile_cruise'), equals(180));
       expect(getThreatTtlSeconds('missile_supersonic'), equals(180));
       expect(getThreatTtlSeconds('kab'), equals(180));
-      expect(getThreatTtlSeconds('shahed'), equals(300));
-      expect(getThreatTtlSeconds('shahed_jet'), equals(300));
-      expect(getThreatTtlSeconds('uav_guided'), equals(300));
-      expect(getThreatTtlSeconds('uav_recon'), equals(300));
-      expect(getThreatTtlSeconds('uav_decoy'), equals(300));
+      expect(getThreatTtlSeconds('shahed'), equals(1320));
+      expect(getThreatTtlSeconds('shahed_jet'), equals(1320));
+      expect(getThreatTtlSeconds('uav_guided'), equals(1320));
+      expect(getThreatTtlSeconds('uav_recon'), equals(1320));
+      expect(getThreatTtlSeconds('uav_decoy'), equals(1320));
       // Exiting oblast override
       expect(getThreatTtlSeconds('shahed', isExitingOblast: true), equals(45));
       expect(getThreatTtlSeconds('missile_cruise', isExitingOblast: true), equals(45));

@@ -74,7 +74,7 @@ int getThreatTtlSeconds(String rawType, {bool isExitingOblast = false}) {
     case 'uav_recon':
     case 'uav_decoy':
     default:
-      return 300;
+      return 1320; // 22 хвилини активного TTL на радарі (діапазон 20-25 хв)
   }
 }
 
@@ -446,7 +446,7 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
       locs.sort((a, b) => a.$1.compareTo(b.$1));
 
       // Розумна обробка подвійних локацій через слеш "Локація1/Локація2" (Sector Midpoint)
-      final List<(int, int, (double, double, String))> mergedLocs = [];
+      final List<(int, int, String, (double, double, String))> mergedLocs = [];
       int locIdx = 0;
       while (locIdx < locs.length) {
         if (locIdx + 1 < locs.length) {
@@ -458,20 +458,21 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
               final lat = (a.$4.$1 + b.$4.$1) / 2.0;
               final lon = (a.$4.$2 + b.$4.$2) / 2.0;
               final name = '${a.$4.$3} / ${b.$4.$3}';
-              mergedLocs.add((a.$1, b.$2, (lat, lon, name)));
+              mergedLocs.add((a.$1, b.$2, '${a.$3}/${b.$3}', (lat, lon, name)));
               locIdx += 2;
               continue;
             }
           }
         }
-        mergedLocs.add((locs[locIdx].$1, locs[locIdx].$2, locs[locIdx].$4));
+        mergedLocs.add((locs[locIdx].$1, locs[locIdx].$2, locs[locIdx].$3, locs[locIdx].$4));
         locIdx++;
       }
 
       final Set<String> addedNames = {};
       final List<Map<String, dynamic>> path = [];
       for (final item in mergedLocs) {
-        final data = item.$3;
+        final itemKey = item.$3;
+        final data = item.$4;
         if (!addedNames.contains(data.$3)) {
           double lat = data.$1;
           double lon = data.$2;
@@ -501,7 +502,7 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
             hasCompassModifier = true;
           }
 
-          path.add({'name': displayName, 'lat': lat, 'lon': lon, 'hasCompass': hasCompassModifier});
+          path.add({'name': displayName, 'lat': lat, 'lon': lon, 'hasCompass': hasCompassModifier, 'key': itemKey});
           addedNames.add(data.$3);
         }
       }
@@ -515,16 +516,69 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
           final item = path[pi];
           final rawName = (item['name'] as String).toLowerCase();
           final locName = rawName.replaceAll(RegExp(r'^(північніше|південніше|західніше|східніше)\s+'), '');
-          final cleanBase = locName.replaceAll(RegExp(r'\s*\([^)]*\)'), '').trim();
-          final matchSub = cleanBase.substring(0, math.min(4, cleanBase.length)).toLowerCase();
+          final cleanBase = locName.replaceAll(RegExp(r'\s*\([^)]*\)'), '').replaceAll('межа ', '').trim();
 
-          final fromPattern = RegExp(r'(?:від|з|із|через|біля|вже біля|район|в районі|повз)\s+\S*' + RegExp.escape(matchSub), caseSensitive: false);
-          if (fromPattern.hasMatch(lineLower)) {
-            fromItem ??= item;
+          final Set<String> searchStems = {};
+          if (item['key'] != null) {
+            final k = item['key'].toString().toLowerCase();
+            searchStems.add(k);
+            if (k.length > 5) searchStems.add(k.substring(0, k.length - 2));
           }
-          final toPattern = RegExp(r'(?:курсом(?:\s+на)?|курс(?:\s+на)?|вектором(?:\s+на)?|вектор(?:\s+на)?|у напрямку|в напрямку|у бік|в бік|на)\s*[~≈]?\s*\S*' + RegExp.escape(matchSub), caseSensitive: false);
-          if (toPattern.hasMatch(lineLower)) {
-            toItem ??= item;
+          if (cleanBase.isNotEmpty) {
+            searchStems.add(cleanBase);
+            searchStems.add(cleanBase.substring(0, math.min(4, cleanBase.length)));
+          }
+          if (locName.contains('водосховищ') || locName.contains('море')) {
+            searchStems.add('водосховищ');
+            searchStems.add('моря');
+            searchStems.add('море');
+          }
+          if (locName.contains('черкащ')) {
+            searchStems.add('черкас');
+            searchStems.add('черкащ');
+          }
+          if (locName.contains('житомир')) searchStems.add('житомир');
+          if (locName.contains('чернігів')) searchStems.add('чернігів');
+          if (locName.contains('полтав')) searchStems.add('полтав');
+          if (locName.contains('вінниц')) searchStems.add('вінниц');
+          if (locName.contains('тетіїв')) searchStems.add('теті');
+
+          bool matchedAsOrigin = false;
+          for (final stem in searchStems) {
+            if (stem.length < 3) continue;
+            final fromPattern = RegExp(
+              r'(?:від|з|із|з-під|виліт з|заходить з|через|повз|біля|вже біля|з району|в районі)\s+[~≈]?\s*(?:району?\s+)?\S*' + RegExp.escape(stem),
+              caseSensitive: false,
+            );
+            final initialPosPattern = RegExp(
+              r'(?:на|у|в)\s+\S*' + RegExp.escape(stem) + r'\S*\s+(?:\S+\s+){0,3}(?:в район|у район|на район|курсом(?:\s+на)?|вектор(?:ом)?(?:\s+на)?|у бік|в бік|у напрямку|в напрямку)\b',
+              caseSensitive: false,
+            );
+            if (fromPattern.hasMatch(lineLower) || initialPosPattern.hasMatch(lineLower)) {
+              fromItem ??= item;
+              matchedAsOrigin = true;
+              break;
+            }
+          }
+
+          if (!matchedAsOrigin) {
+            for (final stem in searchStems) {
+              if (stem.length < 3) continue;
+              final explicitToPattern = RegExp(
+                r'(?:курсом(?:\s+на)?|курс(?:\s+на)?|вектором(?:\s+на)?|вектор(?:\s+на)?|у напрямку|в напрямку|у бік|в бік|на район|в район|у район|до)\s+[~≈]?\s*(?:району?\s+)?\S*' + RegExp.escape(stem),
+                caseSensitive: false,
+              );
+              final generalToPattern = RegExp(
+                r'(?:на|в|у)\s+[~≈]?\s*(?:району?\s+)?\S*' + RegExp.escape(stem),
+                caseSensitive: false,
+              );
+              if (explicitToPattern.hasMatch(lineLower)) {
+                toItem = item;
+                break;
+              } else if (generalToPattern.hasMatch(lineLower)) {
+                toItem ??= item;
+              }
+            }
           }
         }
 
@@ -722,6 +776,112 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
           } catch (_) {
             isDup = true;
             break;
+          }
+        }
+      }
+      if (isDup) continue;
+
+      // Розумна гео-дедуплікація (Geo-Deduplication) між різними каналами
+      if (msg['date'] != null) {
+        DateTime? msgTime;
+        try {
+          msgTime = DateTime.parse(msg['date'].toString()).toUtc();
+        } catch (_) {}
+
+        if (msgTime != null) {
+          final List<Map<String, dynamic>> msgThreats = (msg['threats'] is List && (msg['threats'] as List).isNotEmpty)
+              ? List<Map<String, dynamic>>.from(msg['threats'])
+              : _parseLocalThreats((msg['text'] ?? '').toString());
+
+          if (msgThreats.isNotEmpty) {
+            const distanceCalc = Distance();
+            final geoCheckStart = keptChronological.length > 25 ? keptChronological.length - 25 : 0;
+
+            for (int i = keptChronological.length - 1; i >= geoCheckStart; i--) {
+              final prevMsg = keptChronological[i];
+              DateTime? prevTime;
+              if (prevMsg['date'] != null) {
+                try {
+                  prevTime = DateTime.parse(prevMsg['date'].toString()).toUtc();
+                } catch (_) {}
+              }
+              if (prevTime == null) continue;
+
+              final int timeDiffSec = msgTime.difference(prevTime).inSeconds.abs();
+              // Якщо повідомлення з іншого каналу вийшло з різницею у часі <= 120 секунд
+              if (timeDiffSec <= 120) {
+                final List<Map<String, dynamic>> prevThreats = (prevMsg['threats'] is List && (prevMsg['threats'] as List).isNotEmpty)
+                    ? List<Map<String, dynamic>>.from(prevMsg['threats'])
+                    : _parseLocalThreats((prevMsg['text'] ?? '').toString());
+
+                if (prevThreats.isEmpty) continue;
+
+                bool geoMatchFound = false;
+                for (final tNew in msgThreats) {
+                  final newType = (tNew['type'] ?? 'shahed').toString();
+                  final newPath = tNew['path'] as List?;
+                  if (newPath == null || newPath.isEmpty) continue;
+
+                  final ptNew = newPath.first;
+                  double latNew = 0.0;
+                  double lonNew = 0.0;
+                  if (ptNew is LatLng) {
+                    latNew = ptNew.latitude;
+                    lonNew = ptNew.longitude;
+                  } else if (ptNew is Map) {
+                    latNew = (ptNew['lat'] as num?)?.toDouble() ?? 0.0;
+                    lonNew = (ptNew['lon'] as num?)?.toDouble() ?? 0.0;
+                  }
+                  if (latNew == 0.0 && lonNew == 0.0) continue;
+                  final pNew = LatLng(latNew, lonNew);
+
+                  for (final tPrev in prevThreats) {
+                    final prevType = (tPrev['type'] ?? 'shahed').toString();
+                    // Має такий самий тип загрози (наприклад, обидва shahed або обидва ракетні)
+                    final bool sameType = (newType == prevType) ||
+                        (newType.startsWith('shahed') && prevType.startsWith('shahed')) ||
+                        (newType.contains('missile') && prevType.contains('missile'));
+                    if (!sameType) continue;
+
+                    final prevPath = tPrev['path'] as List?;
+                    if (prevPath == null || prevPath.isEmpty) continue;
+                    final ptPrev = prevPath.first;
+                    double latPrev = 0.0;
+                    double lonPrev = 0.0;
+                    if (ptPrev is LatLng) {
+                      latPrev = ptPrev.latitude;
+                      lonPrev = ptPrev.longitude;
+                    } else if (ptPrev is Map) {
+                      latPrev = (ptPrev['lat'] as num?)?.toDouble() ?? 0.0;
+                      lonPrev = (ptPrev['lon'] as num?)?.toDouble() ?? 0.0;
+                    }
+                    if (latPrev == 0.0 && lonPrev == 0.0) continue;
+                    final pPrev = LatLng(latPrev, lonPrev);
+
+                    // Координати в радіусі <= 6.0 км
+                    final double distKm = distanceCalc.as(LengthUnit.Kilometer, pNew, pPrev);
+                    if (distKm <= 6.0) {
+                      geoMatchFound = true;
+                      break;
+                    }
+                  }
+                  if (geoMatchFound) break;
+                }
+
+                if (geoMatchFound) {
+                  isDup = true;
+                  // Об'єднуємо підпис джерела (наприклад, "Kyiv AirDefense / SK_DM_SK")
+                  final prevCh = (prevMsg['channel'] ?? '').toString();
+                  final newCh = (msg['channel'] ?? '').toString();
+                  if (newCh.isNotEmpty && prevCh.isNotEmpty && !prevCh.contains(newCh)) {
+                    if (prevMsg is Map) {
+                      prevMsg['channel'] = '$prevCh / $newCh';
+                    }
+                  }
+                  break;
+                }
+              }
+            }
           }
         }
       }

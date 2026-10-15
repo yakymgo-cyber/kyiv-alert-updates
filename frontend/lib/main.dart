@@ -253,8 +253,8 @@ final watchedLocationsProvider = NotifierProvider<WatchedLocationsNotifier, List
   return WatchedLocationsNotifier();
 });
 
-const int kCurrentVersionCode = 21;
-const String kCurrentVersionName = '1.2.18';
+const int kCurrentVersionCode = 22;
+const String kCurrentVersionName = '1.2.19';
 
 
 class RemoteConfigNotifier extends Notifier<RemoteConfig> {
@@ -1931,12 +1931,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                           List<Map<String, dynamic>> threats = [];
                           // Жодні шахеди не можуть літати, якщо офіційно відбій (немає тривоги)
                           if (anyAlert && messages.isNotEmpty) {
-                            final recentMsgs = messages.take(60).where((msg) {
+                            final recentMsgs = messages.take(120).where((msg) {
                               if (msg['date'] == null) return true;
                               try {
                                 final msgTime = DateTime.parse(msg['date']).toUtc();
                                 if (msgTime.isAfter(now)) return false;
-                                return now.difference(msgTime).inMinutes <= 15;
+                                return now.difference(msgTime).inMinutes <= 25;
                               } catch (_) {
                                 return true;
                               }
@@ -2105,23 +2105,69 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   jetContextTime = null;
                                 }
                                 
-                                if (msgTextLower.contains('київ') &&
+                                final bool isFullOblastClear = (msgTextLower.contains('відбій') && !msgTextLower.contains('по ракетах')) ||
+                                    msgTextLower.contains('область чисто') ||
+                                    msgTextLower.contains('чисто по області') ||
+                                    msgTextLower.contains('в області чисто') ||
+                                    msgTextLower.contains('по області відбій') ||
+                                    msgTextLower.contains('по області чисто') ||
+                                    msgTextLower.contains('чисте небо');
+
+                                final bool isKyivCityClear = msgTextLower.contains('київ') &&
                                     !msgTextLower.contains('київщин') &&
-                                    !msgTextLower.contains('област')) {
-                                  // Якщо написали "Київ чисто" — прибираємо цілі лише над містом Київ
+                                    !msgTextLower.contains('област');
+
+                                if (isKyivCityClear) {
+                                  // Якщо написали "Київ чисто" — прибираємо цілі лише над містом Київ (радіус <= 18 км)
                                   threats.removeWhere((t) {
                                     if (onlyClearUavs && !onlyClearMissiles && (t['type'] == 'missile_ballistic' || t['type'] == 'missile_cruise' || t['type'] == 'missile_hypersonic' || t['type'] == 'missile_supersonic' || t['type'] == 'kab')) return false;
                                     if (onlyClearMissiles && !onlyClearUavs && !t['type'].toString().contains('missile')) return false;
                                     final p = (t['path'] as List<LatLng>).last;
                                     return const Distance().as(LengthUnit.Meter, kyivCenter, p) <= 18000;
                                   });
-                                } else {
-                                  // Повний відбій / чисто / дорозвідка — очищуємо цілі області
+                                } else if (isFullOblastClear) {
+                                  // Повний офіційний відбій або чисто по всій області — очищуємо всі цілі області
                                   threats.removeWhere((t) {
                                     if (onlyClearUavs && !onlyClearMissiles && (t['type'] == 'missile_ballistic' || t['type'] == 'missile_cruise' || t['type'] == 'missile_hypersonic' || t['type'] == 'missile_supersonic' || t['type'] == 'kab')) return false;
                                     if (onlyClearMissiles && !onlyClearUavs && !t['type'].toString().contains('missile')) return false;
                                     return true;
                                   });
+                                } else {
+                                  // Локальне повідомлення ("І зникло", "Локаційно чисто", "Втрачено", "Не фіксується")
+                                  final specificLocs = kKyivLocations.entries.where((e) =>
+                                    !kExternalBorderKeys.contains(e.key) &&
+                                    e.key != 'київ' && e.key != 'київщин' && e.key != 'центр' &&
+                                    msgTextLower.contains(e.key)
+                                  ).toList();
+
+                                  if (specificLocs.isNotEmpty) {
+                                    // Якщо вказано конкретний район/місто (наприклад "Бровари чисто") — гасимо тільки в радіусі <= 14 км
+                                    threats.removeWhere((t) {
+                                      final path = t['path'] as List<LatLng>;
+                                      if (path.isEmpty) return false;
+                                      return specificLocs.any((loc) {
+                                        final locPt = LatLng(loc.value.$1, loc.value.$2);
+                                        return const Distance().as(LengthUnit.Meter, locPt, path.last) <= 14000;
+                                      });
+                                    });
+                                  } else {
+                                    // Без вказання конкретного району — гасимо ТІЛЬКИ останню ціль,
+                                    // про яку йшлося в попередньому повідомленні за останні 2 хвилини (120с),
+                                    // але НЕ чіпаємо далекі активні цілі в області (як-от Тетіїв)!
+                                    if (threats.isNotEmpty) {
+                                      int lastRecentIdx = -1;
+                                      for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                        final lastUpd = threats[ti]['lastUpdated'] as DateTime?;
+                                        if (lastUpd != null && msgTime.difference(lastUpd).inSeconds.abs() <= 120) {
+                                          lastRecentIdx = ti;
+                                          break;
+                                        }
+                                      }
+                                      if (lastRecentIdx != -1) {
+                                        threats.removeAt(lastRecentIdx);
+                                      }
+                                    }
+                                  }
                                 }
                                 
                                 if (!hasDangerAlso) continue;
@@ -2377,64 +2423,73 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         final existingTime = existing['lastUpdated'] as DateTime;
                                         final lastPt = existingPath.last;
                                         final distMeters = const Distance().as(LengthUnit.Meter, lastPt, path.first);
-                                        final timeDiffMins = msgTime.difference(existingTime).inMinutes.abs();
+                                        final double timeDiffSeconds = msgTime.difference(existingTime).inSeconds.abs().toDouble();
+                                        final double timeDiffHours = timeDiffSeconds / 3600.0;
                                         
                                         // Якщо цілі з одного повідомлення і ми їх розділили (parseLocalThreats повернув кілька) — не об'єднуємо їх між собою!
                                         if (existing['msgId'] == msg['id']) {
                                           continue;
                                         }
 
-                                        // Розрахунок дозволеної дистанції з урахуванням ракетної швидкості
+                                        // Розрахунок дозволеної дистанції з урахуванням жорсткого кінематичного правила Multi-Target Tracking
                                         final bool isAnyMissile = isMissileThreat || existingIsMissile || activeBallisticOrMissileContext;
                                         final bool isJetThreat = (existingType == 'shahed_jet' || rawType == 'shahed_jet');
+                                        final double effSpeed = isAnyMissile ? math.max(speed, 5000.0) : (isJetThreat ? math.max(speed, 480.0) : speed);
 
-                                        // Якщо це звичайний БпЛА (не реактивний) і відстань за 1 хвилину перевищує 25 км — не об'єднувати, а вважати двома окремими БпЛА!
-                                        if (!isAnyMissile && !isJetThreat && timeDiffMins <= 1 && distMeters > 25000.0) {
+                                        // maxDistanceKm = (speedKmh * elapsedHours * 1.4).clamp(4.0, 22.0)
+                                        final double maxDistanceKm = isAnyMissile
+                                            ? (effSpeed * timeDiffHours * 1.2).clamp(10.0, 80.0)
+                                            : (effSpeed * timeDiffHours * 1.4).clamp(4.0, 22.0);
+                                        final double allowedDistMeters = maxDistanceKm * 1000.0;
+
+                                        // Якщо нова точка знаходиться далі ніж allowedDistMeters (максимум 22 км для БпЛА) —
+                                        // це ОКРЕМА нова ціль! Не зливати і не видаляти стару ціль!
+                                        if (distMeters > allowedDistMeters) {
                                           continue;
                                         }
 
-                                        final double maxAllowed = isAnyMissile ? 180000.0 : (isJetThreat ? 120000.0 : 90000.0);
-                                        final double baseDist = isAnyMissile ? 60000.0 : (isJetThreat ? 35000.0 : 25000.0);
-                                        final double effSpeed = isAnyMissile ? math.max(speed, 5000.0) : (isJetThreat ? math.max(speed, 480.0) : speed);
-                                        final double allowedDist = (baseDist + (timeDiffMins * (effSpeed * 1000.0 / 60.0))).clamp(baseDist, maxAllowed);
+                                        // Заборона малювання лінії вектора між точками з різних повідомлень, якщо відстань > 25 км
+                                        if (distMeters > 25000.0) {
+                                          continue;
+                                        }
 
                                         // Об'єднуємо послідовні точки однієї цілі
-                                        if (distMeters < allowedDist) {
-                                          if (isAnyMissile) {
-                                            if (existing['type'] != 'missile_hypersonic' && existing['type'] != 'missile_cruise') {
-                                              existing['type'] = 'missile_ballistic';
-                                              existing['speed'] = 5000.0;
-                                              existing['label'] = 'Балістична / Швидкісна ціль';
-                                            }
-                                          } else if (isJetThreat) {
-                                            // No Downgrade: якщо ціль була або стала shahed_jet, не повертати до shahed
-                                            if (!hasPistonDroneInMsg) {
-                                              existing['type'] = 'shahed_jet';
-                                              existing['speed'] = 480.0;
-                                              existing['label'] = 'Реактивний БпЛА';
-                                            }
+                                        if (distMeters <= allowedDistMeters) {
+                                        if (isAnyMissile) {
+                                          if (existing['type'] != 'missile_hypersonic' && existing['type'] != 'missile_cruise') {
+                                            existing['type'] = 'missile_ballistic';
+                                            existing['speed'] = 5000.0;
+                                            existing['label'] = 'Балістична / Швидкісна ціль';
                                           }
+                                        } else if (isJetThreat) {
+                                          // No Downgrade: якщо ціль була або стала shahed_jet, не повертати до shahed
+                                          if (!hasPistonDroneInMsg) {
+                                            existing['type'] = 'shahed_jet';
+                                            existing['speed'] = 480.0;
+                                            existing['label'] = 'Реактивний БпЛА';
+                                          }
+                                        }
 
-                                          bool pointAdded = false;
-                                          if (path.length >= 2) {
-                                            existingPath.clear();
-                                            existingPath.addAll(path);
-                                            existingNames.clear();
-                                            existingNames.addAll(locNames);
-                                            pointAdded = true;
-                                          } else {
-                                            for (int k = 0; k < path.length; k++) {
-                                              final pt = path[k];
-                                              final d = const Distance().as(LengthUnit.Meter, existingPath.last, pt);
-                                              if (d > 500) {
-                                                existingPath.add(pt);
-                                                pointAdded = true;
-                                                if (k < locNames.length && (existingNames.isEmpty || existingNames.last != locNames[k])) {
-                                                  existingNames.add(locNames[k]);
-                                                }
+                                        bool pointAdded = false;
+                                        if (path.length >= 2) {
+                                          existingPath.clear();
+                                          existingPath.addAll(path);
+                                          existingNames.clear();
+                                          existingNames.addAll(locNames);
+                                          pointAdded = true;
+                                        } else {
+                                          for (int k = 0; k < path.length; k++) {
+                                            final pt = path[k];
+                                            final d = const Distance().as(LengthUnit.Meter, existingPath.last, pt);
+                                            if (d > 500 && d <= 25000.0) {
+                                              existingPath.add(pt);
+                                              pointAdded = true;
+                                              if (k < locNames.length && (existingNames.isEmpty || existingNames.last != locNames[k])) {
+                                                existingNames.add(locNames[k]);
                                               }
                                             }
                                           }
+                                        }
                                           existing['route'] = existingNames.isNotEmpty ? existingNames.join(' → ') : existing['route'];
                                           if (isExitingOblast) {
                                             if (existing['route'] != null && !existing['route'].toString().contains('(Вихід з області)')) {
