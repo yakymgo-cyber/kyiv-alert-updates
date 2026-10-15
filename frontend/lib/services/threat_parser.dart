@@ -1218,6 +1218,37 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
     return keptChronological.reversed.toList();
   }
 
+  /// Фільтрує повідомлення для оперативного відображення на радарі та у стрічці:
+  /// Якщо є активні повідомлення за останні [maxAgeMinutes] (за замовчуванням 240 хв / 4 год),
+  /// відсікає застарілі ранкові повідомлення або повідомлення минулих сесій, що висять внизу списку.
+  /// Якщо ж за останні 4 години нічого не було (період спокою), повертає останні [fallbackCount] повідомлень,
+  /// щоб користувач бачив останній статус безпеки (напр. відбій).
+  List<T> _filterOperationalMessages<T>(
+    List<T> messages, {
+    DateTime? nowUtc,
+    int maxAgeMinutes = 240,
+    int fallbackCount = 5,
+  }) {
+    if (messages.isEmpty) return [];
+    final now = nowUtc ?? DateTime.now().toUtc();
+    final recent = messages.where((msg) {
+      if (msg is Map && msg['date'] != null) {
+        try {
+          final dt = DateTime.parse(msg['date'].toString()).toUtc();
+          return now.difference(dt).inMinutes <= maxAgeMinutes;
+        } catch (_) {
+          return true;
+        }
+      }
+      return true;
+    }).toList();
+
+    if (recent.isNotEmpty) {
+      return recent;
+    }
+    return messages.take(fallbackCount).toList();
+  }
+
 
 String _getDefaultThreatLabel(String type) {
   switch (type) {
@@ -1558,6 +1589,17 @@ class ThreatParser {
   static List<Map<String, dynamic>> parseLocalThreats(String text) => _parseLocalThreats(text);
   static String categorizeLocalMessage(String text) => _categorizeLocalMessage(text);
   static List<dynamic> deduplicateMessages(List<dynamic> rawMsgs) => _deduplicateMessages(rawMsgs);
+  static List<T> filterOperationalMessages<T>(
+    List<T> messages, {
+    DateTime? nowUtc,
+    int maxAgeMinutes = 240,
+    int fallbackCount = 5,
+  }) => _filterOperationalMessages<T>(
+    messages,
+    nowUtc: nowUtc,
+    maxAgeMinutes: maxAgeMinutes,
+    fallbackCount: fallbackCount,
+  );
   static StrategicLaunchEvent? detectStrategicLaunch(List<dynamic> messages, {DateTime? now}) => _detectStrategicLaunch(messages, now: now);
 }
 

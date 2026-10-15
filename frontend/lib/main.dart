@@ -253,8 +253,8 @@ final watchedLocationsProvider = NotifierProvider<WatchedLocationsNotifier, List
   return WatchedLocationsNotifier();
 });
 
-const int kCurrentVersionCode = 32;
-const String kCurrentVersionName = '1.2.29';
+const int kCurrentVersionCode = 33;
+const String kCurrentVersionName = '1.2.30';
 
 
 class RemoteConfigNotifier extends Notifier<RemoteConfig> {
@@ -1759,6 +1759,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
           }
       ];
       messages = allTestMessages.sublist(allTestMessages.length - testCount);
+    } else {
+      final nowUtc = _isReplayMode
+          ? DateTime.now().toUtc().add(Duration(seconds: (_replayOffsetMinutes * 60).round()))
+          : DateTime.now().toUtc();
+      messages = ThreatParser.filterOperationalMessages(messages, nowUtc: nowUtc);
     }
 
     final isLoadingInitial = ref.read(messagesProvider.notifier).isLoading && !isTestMode;

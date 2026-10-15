@@ -1213,9 +1213,31 @@ async def start_telegram_client():
             deduped_history.append(item)
 
     deduped_history.reverse()
+    now_utc = datetime.now(timezone.utc)
+    cutoff_4h = now_utc - timedelta(hours=4)
+    recent_history = []
+    for item in deduped_history:
+        raw_d = item.get("date")
+        if not raw_d:
+            recent_history.append(item)
+            continue
+        try:
+            m_date = datetime.fromisoformat(raw_d.replace("Z", "+00:00"))
+            if m_date.tzinfo is None:
+                m_date = m_date.replace(tzinfo=timezone.utc)
+            else:
+                m_date = m_date.astimezone(timezone.utc)
+            if m_date >= cutoff_4h:
+                recent_history.append(item)
+        except Exception:
+            recent_history.append(item)
+
     latest_messages.clear()
-    latest_messages.extend(deduped_history[:50])
-    update_night_summary_from_messages(latest_messages)
+    if recent_history:
+        latest_messages.extend(recent_history[:50])
+    else:
+        latest_messages.extend(deduped_history[:5])
+    update_night_summary_from_messages(deduped_history)
     
     @client.on(events.NewMessage(chats=CHANNELS))
     async def handler(event):
@@ -1300,6 +1322,27 @@ async def start_telegram_client():
             latest_messages.insert(0, new_msg)
             if len(latest_messages) > 50:
                 latest_messages.pop()
+            # Відсікаємо застарілі ранкові/попередні повідомлення (> 4 годин) при наявності свіжих
+            now_live = datetime.now(timezone.utc)
+            cutoff_live = now_live - timedelta(hours=4)
+            filtered_live = []
+            for m in latest_messages:
+                raw_d = m.get("date")
+                if not raw_d:
+                    filtered_live.append(m)
+                    continue
+                try:
+                    dt = datetime.fromisoformat(raw_d.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    else:
+                        dt = dt.astimezone(timezone.utc)
+                    if dt >= cutoff_live:
+                        filtered_live.append(m)
+                except Exception:
+                    filtered_live.append(m)
+            if filtered_live:
+                latest_messages[:] = filtered_live
             update_night_summary_from_messages(latest_messages)
             print(f"Нове повідомлення ({new_msg['type']}): {clean_text[:30]}...")
 

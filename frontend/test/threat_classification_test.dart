@@ -773,6 +773,41 @@ void main() {
       expect(t.first['path'].last['lat'], closeTo(50.4628, 0.001));
       expect(t.first['path'].last['lon'], closeTo(30.4815, 0.001));
     });
+
+    test('filterOperationalMessages purges stale morning messages (>4 hours old) during active evening raid', () {
+      final now = DateTime.utc(2026, 10, 15, 21, 20);
+      final messages = [
+        {'id': 1, 'channel': 'kyiv_airdef', 'text': 'Ракета на Київ', 'date': '2026-10-15T21:16:00Z'},
+        {'id': 2, 'channel': 'war_monitor', 'text': 'Шахед на Оболонь', 'date': '2026-10-15T21:05:00Z'},
+        {'id': 3, 'channel': 'kievn', 'text': 'Київ чисто', 'date': '2026-10-15T10:09:00Z'},
+        {'id': 4, 'channel': 'kievn', 'text': 'Шахед на Позняки', 'date': '2026-10-15T09:57:00Z'},
+        {'id': 5, 'channel': 'kievn', 'text': 'Шахед на Бориспіль', 'date': '2026-10-15T09:43:00Z'},
+      ];
+
+      final filtered = ThreatParser.filterOperationalMessages(messages, nowUtc: now);
+      expect(filtered.length, equals(2));
+      expect(filtered.map((m) => m['id']).toList(), equals([1, 2]));
+      expect(filtered.any((m) => m['id'] == 3), isFalse);
+      expect(filtered.any((m) => m['id'] == 4), isFalse);
+      expect(filtered.any((m) => m['id'] == 5), isFalse);
+    });
+
+    test('filterOperationalMessages retains fallback messages during calm period when no recent messages exist', () {
+      final now = DateTime.utc(2026, 10, 15, 18, 0); // 8 hours after morning raid
+      final messages = [
+        {'id': 3, 'channel': 'kievn', 'text': 'Київ чисто', 'date': '2026-10-15T10:09:00Z'},
+        {'id': 4, 'channel': 'kievn', 'text': 'Шахед на Позняки', 'date': '2026-10-15T09:57:00Z'},
+      ];
+
+      final filtered = ThreatParser.filterOperationalMessages(messages, nowUtc: now);
+      expect(filtered.length, equals(2));
+      expect(filtered.map((m) => m['id']).toList(), equals([3, 4]));
+    });
+
+    test('filterOperationalMessages handles empty list safely', () {
+      final filtered = ThreatParser.filterOperationalMessages([]);
+      expect(filtered, isEmpty);
+    });
   });
 }
 
