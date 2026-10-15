@@ -115,7 +115,10 @@ String cleanHtmlString(String html, {int maxLength = 600}) {
   text = text.replaceAll(RegExp(r'http\S+'), '');
   text = text.replaceAll(RegExp(r'@\w+'), '');
 
-  const adMarkers = ['підписатись', 'наш резерв', 'надіслати новину', 'джерело', 'більше новин', 'реклама', 'зв\'язок з', 'підписка'];
+  const adMarkers = [
+    'підписатись', 'наш резерв', 'надіслати новину', 'джерело', 'більше новин', 'реклама', 'зв\'язок з', 'підписка',
+    'monobank', 'send.monobank', 'приватбанк', 'банку', 'підтримку каналу', 'закинути на', '4441 1110', '5375 4141',
+  ];
   final cleanLines = <String>[];
   for (final line in text.split('\n')) {
     final lower = line.toLowerCase();
@@ -131,23 +134,45 @@ String cleanHtmlString(String html, {int maxLength = 600}) {
 
 String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html, maxLength: maxLength);
 
-
+  int? _extractSpeed(String text) {
+    final tLower = text.toLowerCase();
+    final match = RegExp(
+      r'(?:^|[^\wа-яіїєґ])(\d{2,4})\s*(?:км/год|км\\год|швидкість|швидк)(?![а-яіїєґa-z0-9])|(?<![а-яіїєґa-z0-9])(?:швидкість|швидк)\s*[:=-]?\s*(\d{2,4})(?![а-яіїєґa-z0-9])',
+      caseSensitive: false,
+    ).firstMatch(tLower);
+    if (match != null) {
+      final rawVal = match.group(1) ?? match.group(2);
+      if (rawVal != null) {
+        final val = int.tryParse(rawVal);
+        if (val != null && val >= 60 && val <= 9500) {
+          return val;
+        }
+      }
+    }
+    return null;
+  }
 
   int? _extractAltitude(String text) {
-    final tLower = text.toLowerCase();
-    final mExplicit = RegExp(r'(?:висот[аі]|h|alt)\s*[:=-]?\s*(\d{3,5})\b', caseSensitive: false).firstMatch(tLower);
+    var tClean = text.toLowerCase();
+    // 1) Видаляємо конструкції швидкості, номери банківських карток та "750" (підстанція ПС 750 / на Бородянку 750)
+    tClean = tClean.replaceAll(RegExp(r'\b\d{4}(?:[\s-]+\d{4}){3}\b'), '');
+    tClean = tClean.replaceAll(RegExp(r'(?:^|[^\wа-яіїєґ])(\d{2,4})\s*(?:км/год|км\\год|швидкість|швидк)(?![а-яіїєґa-z0-9])|(?<![а-яіїєґa-z0-9])(?:швидкість|швидк)\s*[:=-]?\s*(\d{2,4})(?![а-яіїєґa-z0-9])', caseSensitive: false), ' ');
+    tClean = tClean.replaceAll(RegExp(r'(?:або|бородянк[а-яіїєґa-z0-9]*|пс)\s+750(?:\s*кв)?(?![а-яіїєґa-z0-9])', caseSensitive: false), ' ');
+    tClean = tClean.replaceAll(RegExp(r'\b750\s*(?:кв|кіловольт)\b', caseSensitive: false), ' ');
+
+    final mExplicit = RegExp(r'(?:висот[аі]|h|alt)\s*[:=-]?\s*(\d{3,5})\b', caseSensitive: false).firstMatch(tClean);
     if (mExplicit != null) {
       final val = int.tryParse(mExplicit.group(1)!);
       if (val != null && val >= 100 && val <= 10000) return val;
       if (val != null && val > 10000) return null;
     }
-    final m = RegExp(r'\b(\d{3,5})\s*(?:м|метр|m)(?![а-яіїєґa-z])', caseSensitive: false).firstMatch(tLower);
+    final m = RegExp(r'\b(\d{3,5})\s*(?:м|метр|m)(?![а-яіїєґa-z])', caseSensitive: false).firstMatch(tClean);
     if (m != null) {
       final val = int.tryParse(m.group(1)!);
       if (val != null && val >= 50 && val <= 10000) return val;
       if (val != null && val > 10000) return null;
     }
-    final matches = RegExp(r'\b(\d{3,4})\b').allMatches(text);
+    final matches = RegExp(r'\b(\d{3,4})\b').allMatches(tClean);
     for (final match in matches) {
       final val = int.tryParse(match.group(1)!);
       if (val != null && val >= 300 && val <= 10000 && val % 10 == 0) {
@@ -158,8 +183,9 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
   }
 
   
-  Map<String, dynamic> _analyzeLocalThreat(String text, {int? altitudeMeters}) {
+  Map<String, dynamic> _analyzeLocalThreat(String text, {int? altitudeMeters, int? speedKmh}) {
     final tLower = text.toLowerCase();
+    final explicitSpeed = (speedKmh ?? _extractSpeed(text))?.toDouble();
 
     final bool hasExplicitDrone = tLower.contains('шахед') ||
         tLower.contains('бпла') ||
@@ -182,24 +208,24 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
     final bool hasUavAltitude = (altitudeMeters != null && altitudeMeters >= 300 && altitudeMeters <= 10000);
 
     if (tLower.contains('каб') || tLower.contains('кар ') || tLower.contains('керован') || tLower.contains('уфаб')) {
-      return {'type': 'kab', 'speed': 850.0, 'label': 'КАБ / КАР'};
+      return {'type': 'kab', 'speed': explicitSpeed ?? 850.0, 'label': 'КАБ / КАР'};
     } else if (tLower.contains('на керуванні') || tLower.contains('🎮') || tLower.contains('сікер') || tLower.contains('оптичн') || tLower.contains('старлінк')) {
-      return {'type': 'uav_guided', 'speed': 220.0, 'label': 'БпЛА на керуванні 🎮'};
+      return {'type': 'uav_guided', 'speed': explicitSpeed ?? 220.0, 'label': 'БпЛА на керуванні 🎮'};
     } else if (tLower.contains('розвідник') || tLower.contains('орлан') || tLower.contains('зала') || tLower.contains('zala') || tLower.contains('суперкам') || tLower.contains('supercam') || tLower.contains('ланцет')) {
-      return {'type': 'uav_recon', 'speed': 130.0, 'label': 'РозвідБпЛА 👁️', 'isCircling': true};
+      return {'type': 'uav_recon', 'speed': explicitSpeed ?? 130.0, 'label': 'РозвідБпЛА 👁️', 'isCircling': true};
     } else if (tLower.contains('пародія') || tLower.contains('гербера') || tLower.contains('імітатор') || tLower.contains('фальш') || tLower.contains('пінопласт')) {
-      return {'type': 'uav_decoy', 'speed': 160.0, 'label': 'Імітатор / Фальш-ціль'};
+      return {'type': 'uav_decoy', 'speed': explicitSpeed ?? 160.0, 'label': 'Імітатор / Фальш-ціль'};
     } else if (!hasUavAltitude) {
       if (tLower.contains('кинджал') || tLower.contains('циркон') || tLower.contains('гіперзвук')) {
-        return {'type': 'missile_hypersonic', 'speed': 12000.0, 'label': 'Гіперзвукова ракета'};
+        return {'type': 'missile_hypersonic', 'speed': explicitSpeed ?? 12000.0, 'label': 'Гіперзвукова ракета'};
       } else if (tLower.contains('баліст') || tLower.contains('іскандер') || tLower.contains('кн-23') || tLower.contains('kn-23') || tLower.contains('с-300') || tLower.contains('с-400') || tLower.contains('☄')) {
-        return {'type': 'missile_ballistic', 'speed': 5000.0, 'label': 'Балістична / Швидкісна ціль'};
+        return {'type': 'missile_ballistic', 'speed': explicitSpeed ?? 5000.0, 'label': 'Балістична / Швидкісна ціль'};
       } else if (!hasExplicitDrone && hasBallisticMarker) {
-        return {'type': 'missile_ballistic', 'speed': 5000.0, 'label': 'Балістична / Швидкісна ціль'};
+        return {'type': 'missile_ballistic', 'speed': explicitSpeed ?? 5000.0, 'label': 'Балістична / Швидкісна ціль'};
       } else if (tLower.contains('х-22') || tLower.contains('х-32') || tLower.contains('онікс') || tLower.contains('х-31') || tLower.contains('х-59') || tLower.contains('х-69')) {
-        return {'type': 'missile_supersonic', 'speed': 3200.0, 'label': 'Надзвукова ракета (Х-22/Онікс)'};
+        return {'type': 'missile_supersonic', 'speed': explicitSpeed ?? 3200.0, 'label': 'Надзвукова ракета (Х-22/Онікс)'};
       } else if (tLower.contains('крилат') || tLower.contains('х-101') || tLower.contains('калібр') || tLower.contains('іскандер-к') || (tLower.contains('ракет') && !tLower.contains('реактив'))) {
-        return {'type': 'missile_cruise', 'speed': 900.0, 'label': 'Крилата ракета'};
+        return {'type': 'missile_cruise', 'speed': explicitSpeed ?? 900.0, 'label': 'Крилата ракета'};
       }
     }
 
@@ -236,16 +262,37 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
         highAlt);
 
     if (isJet) {
-      return {'type': 'shahed_jet', 'speed': 480.0, 'label': 'Реактивний БпЛА'};
+      return {'type': 'shahed_jet', 'speed': explicitSpeed ?? 480.0, 'label': 'Реактивний БпЛА'};
     }
-    return {'type': 'shahed', 'speed': 185.0, 'label': 'Ударний БпЛА (Шахед)'};
+    return {'type': 'shahed', 'speed': explicitSpeed ?? 185.0, 'label': 'Ударний БпЛА (Шахед)'};
   }
 
   
   String _categorizeLocalMessage(String text) {
     final tLower = text.toLowerCase();
-    const offtopic = ['футбол', 'матч', 'гол', 'рахунок', 'динамо', 'шахтар', 'збірна', 'пенальті', 'розіграш', 'реклама', 'спонсор'];
-    if (offtopic.any((kw) => tLower.contains(kw))) return 'ignore';
+    const offtopic = [
+      'футбол', 'матч', 'гол', 'рахунок', 'динамо', 'шахтар', 'збірна', 'пенальті', 'розіграш', 'реклама', 'спонсор',
+      'monobank', 'send.monobank', 'приватбанк', 'банку', 'підтримку каналу', 'закинути на', '4441 1110', '5375 4141',
+    ];
+    if (offtopic.any((kw) => tLower.contains(kw)) ||
+        RegExp(r'\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b').hasMatch(text)) {
+      return 'ignore';
+    }
+
+    // Блокування повітряних тривог інших областей (air_alert_ua хештеги)
+    const externalDistrictHashtags = [
+      '#харківський_район', '#дніпровський_район', '#камянський_район', '#кам\'янський_район',
+      '#криворізький_район', '#синельниківський_район', '#павлоградський_район', '#новомосковський_район',
+      '#чугуївський_район', '#ізюмський_район', '#богодухівський_район', '#лозівський_район',
+      '#красноградський_район', '#сумський_район', '#охтирський_район', '#конотопський_район',
+      '#шосткинський_район',
+    ];
+    final bool hasExtHashtag = externalDistrictHashtags.any((tag) => tLower.contains(tag));
+    final bool hasExtPhrase = (tLower.contains('в харківський район') ||
+        tLower.contains('у харківський район') ||
+        tLower.contains('в дніпровський район') ||
+        tLower.contains('у дніпровський район')) && !(tLower.contains('київ') || tLower.contains('києв'));
+    if (hasExtHashtag || hasExtPhrase) return 'ignore';
 
     final bool isCasualtyOrAftermath = tLower.contains('загибл') ||
         tLower.contains('постраждал') ||
@@ -255,11 +302,18 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
         tLower.contains('підсумки') ||
         tLower.contains('за ніч') ||
         tLower.contains('станом на');
-    if (text.trim().length < 40 &&
+
+    final bool isNegatedClear = tLower.contains('не мінус') || tLower.contains('не зник') || tLower.contains('не збито');
+
+    if (!isNegatedClear && text.trim().length < 40 &&
         (tLower.contains('знищено') ||
          tLower.contains('ліквідован') ||
          tLower.contains('збито') ||
          tLower.contains('мінус') ||
+         tLower.contains('-1') ||
+         tLower.contains('все наче') ||
+         tLower.contains('ніби все') ||
+         tLower.contains('нема його') ||
          tLower.contains('відбито')) &&
         !isCasualtyOrAftermath) {
       return 'clear';
@@ -273,13 +327,14 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
       'не спостерігається', 'не фіксується', 'немає цілей', 'без фіксаці', 'фіксацій немає',
       'не фіксуються', 'чисте небо', 'попередньо чисто', 'все походу', 'та все, нема', 'нема вже',
       'немає', 'нема', 'зникло', 'зник', 'знив', 'чисто по',
+      'все наче', 'ніби все', 'нема його', '-1', 'ушов назад', 'втрачено над', 'попередньо збили',
     ];
-    final bool hasClearKeyword = clear.any((kw) {
+    final bool hasClearKeyword = !isNegatedClear && (clear.any((kw) {
       if (kw == 'безпек') {
         return tLower.contains('безпек') && !tLower.contains('небезпек');
       }
       return tLower.contains(kw);
-    }) || dynamicClearKeywords.any((kw) => tLower.contains(kw));
+    }) || dynamicClearKeywords.any((kw) => tLower.contains(kw)));
     if (hasClearKeyword) return 'clear';
 
     const danger = [
@@ -291,6 +346,7 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
       'ціль', 'швидкісна', 'швидкісні', 'виходи', 'прилуки', 'бобровиця', 'згурівк', 'штуки',
       'багато цілей', 'цілей йде', 'цілі йдуть', 'група цілей', 'увага !!', 'увага!!',
       'літає', 'кружляє', 'крутить', 'фіксується', 'водосховищ', 'вишгород', 'тетіїв', 'вилізло', 'виліз',
+      'в\'єтнам', 'вєтнам', 'не мінус', 'не зник', 'не збито',
     ];
     if (danger.any((kw) => tLower.contains(kw)) ||
         dynamicDangerKeywords.any((kw) => tLower.contains(kw)) ||
@@ -308,6 +364,26 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
 
 
   List<Map<String, dynamic>> _parseLocalThreats(String text) {
+    final tLower = text.toLowerCase();
+
+    // Блокування повітряних тривог інших областей (air_alert_ua хештеги)
+    const externalDistrictHashtags = [
+      '#харківський_район', '#дніпровський_район', '#камянський_район', '#кам\'янський_район',
+      '#криворізький_район', '#синельниківський_район', '#павлоградський_район', '#новомосковський_район',
+      '#чугуївський_район', '#ізюмський_район', '#богодухівський_район', '#лозівський_район',
+      '#красноградський_район', '#сумський_район', '#охтирський_район', '#конотопський_район',
+      '#шосткинський_район',
+    ];
+    final bool hasExtHashtag = externalDistrictHashtags.any((tag) => tLower.contains(tag));
+    final bool hasExtPhrase = (tLower.contains('в харківський район') ||
+        tLower.contains('у харківський район') ||
+        tLower.contains('в дніпровський район') ||
+        tLower.contains('у дніпровський район')) && !(tLower.contains('київ') || tLower.contains('києв'));
+
+    if (hasExtHashtag || hasExtPhrase) {
+      return [];
+    }
+
     // 1. Специфічні стоп-слова всеукраїнських зведень та інших регіонів
     const globalDigestStopWords = [
       'кроп', 'кропивницьк', 'знам\'ян', 'знамян', 'олександрі', 'павлиш', 
@@ -317,7 +393,6 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
       'дніпропетров', 'харківщин', 'сумщин', 'донеччин', 'луганщин', 'одещин'
     ];
 
-    final tLower = text.toLowerCase();
     final bool hasGlobalStopWord = globalDigestStopWords.any((sw) {
       if (sw == 'олександрі') {
         return tLower.contains('олександрі') && !tLower.contains('олександрів');
@@ -347,14 +422,22 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
 
     checkAndAutoGeocodeLocations(text);
     final globalAlt = _extractAltitude(text);
-    final globalThreat = _analyzeLocalThreat(text, altitudeMeters: globalAlt);
+    final globalSpeed = _extractSpeed(text);
+    final globalThreat = _analyzeLocalThreat(text, altitudeMeters: globalAlt, speedKmh: globalSpeed);
     final textWithoutReply = text.replaceAll(RegExp(r'^↪️.*?\n'), '');
     final cleanLower = textWithoutReply.toLowerCase();
 
-    final bool hasMultipleDrones = RegExp(r'(?:^|\s)(?:[1-9]\s*(?:х|x|шт)?|ще один|кілька|групи|декілька|шахеди|бпла|цілі)(?:\s|$)').hasMatch(cleanLower);
+    final bool hasMultipleDrones = RegExp(r'(?:^|\s)(?:[1-9]\s*(?:х|x|шт)?|ще один|кілька|групи|декілька|шахеди|бпла|цілі|перший|другий)(?:\s|$)').hasMatch(cleanLower);
     final bool hasSplitters = textWithoutReply.contains(' та ') || textWithoutReply.contains(' і ') || textWithoutReply.contains(',');
+
+    // Розбиваємо текст перед словами Другий, Третій, 2-й, 3-й, Той що на окремі рядки
+    final preSplitText = textWithoutReply.replaceAllMapped(
+      RegExp(r'(?:[\s.,;]+)(Другий|Третій|2-й|3-й|Той що)(?![а-яіїєґa-z0-9])', caseSensitive: false),
+      (m) => '\n${m.group(1)}',
+    );
+
     List<String> lines = [];
-    for (final rawLine in textWithoutReply.split('\n')) {
+    for (final rawLine in preSplitText.split('\n')) {
       if (hasMultipleDrones && hasSplitters && !rawLine.toLowerCase().contains('через')) {
         lines.addAll(rawLine.replaceAll(' та ', '\n').replaceAll(' і ', '\n').replaceAll(',', '\n').split('\n'));
       } else {
@@ -680,8 +763,21 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
         }
       }
 
+      int? lineOrderTag;
+      final lLower = line.toLowerCase();
+      if (RegExp(r'(?:^|\s)(?:перший|1-й|1й)(?![а-яіїєґa-z0-9])|^\s*1\s+на(?![а-яіїєґa-z0-9])').hasMatch(lLower)) {
+        lineOrderTag = 1;
+      } else if (RegExp(r'(?:^|\s)(?:другий|2-й|2й)(?![а-яіїєґa-z0-9])|^\s*2\s+на(?![а-яіїєґa-z0-9])').hasMatch(lLower)) {
+        lineOrderTag = 2;
+      } else if (RegExp(r'(?:^|\s)(?:третій|3-й|3й)(?![а-яіїєґa-z0-9])|^\s*3\s+на(?![а-яіїєґa-z0-9])').hasMatch(lLower)) {
+        lineOrderTag = 3;
+      } else if (lines.length >= 2 && lines.any((l) => RegExp(r'(?:другий|2-й|2й)(?![а-яіїєґa-z0-9])', caseSensitive: false).hasMatch(l.toLowerCase()))) {
+        if (lines.indexOf(line) == 0) lineOrderTag = 1;
+      }
+
       final lineAlt = _extractAltitude(line) ?? globalAlt;
-      final lineThreat = _analyzeLocalThreat(line, altitudeMeters: lineAlt);
+      final lineSpeed = _extractSpeed(line) ?? globalSpeed;
+      final lineThreat = _analyzeLocalThreat(line, altitudeMeters: lineAlt, speedKmh: lineSpeed);
       final bool circlingWordsInLine = lineLower.contains('літає') ||
           lineLower.contains('кружля') ||
           lineLower.contains('крутить') ||
@@ -720,9 +816,11 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
       final effectiveType = (lineThreat['type'] != null && lineThreat['type'] != 'shahed')
           ? lineThreat['type']
           : (globalThreat['type'] ?? 'shahed');
-      final effectiveSpeed = (lineThreat['type'] != null && lineThreat['type'] != 'shahed')
-          ? lineThreat['speed']
-          : (globalThreat['speed'] ?? 185.0);
+      final effectiveSpeed = (lineSpeed != null)
+          ? lineSpeed.toDouble()
+          : ((lineThreat['type'] != null && lineThreat['type'] != 'shahed')
+              ? lineThreat['speed']
+              : (globalThreat['speed'] ?? 185.0));
       final effectiveLabel = (lineThreat['type'] != null && lineThreat['type'] != 'shahed')
           ? lineThreat['label']
           : (globalThreat['label'] ?? _getDefaultThreatLabel(effectiveType));
@@ -737,6 +835,25 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
           'altitude': altitudeStr,
           'altitudeMeters': lineAlt,
           'isDescending': isDescending,
+          'orderTag': lineOrderTag,
+        });
+      }
+    }
+
+    if (parsed.isEmpty) {
+      final bool hasVietnamSlang = cleanLower.contains('в\'єтнам') || cleanLower.contains('вєтнам');
+      if (hasVietnamSlang) {
+        parsed.add({
+          'type': 'shahed',
+          'speed': 185.0,
+          'label': 'Активна робота ППО (Київ) 💥',
+          'path': [
+            {'name': 'Київ (ППО)', 'lat': 50.450, 'lon': 30.523}
+          ],
+          'isCircling': false,
+          'altitude': globalAlt != null ? '$globalAlt м' : null,
+          'altitudeMeters': globalAlt,
+          'isDescending': false,
         });
       }
     }
@@ -1221,7 +1338,8 @@ List<LatLng> _generateCirclePolygon(LatLng center, double radiusInMeters) {
 List<dynamic> deduplicateMessages(List<dynamic> rawMsgs) => _deduplicateMessages(rawMsgs);
 List<Map<String, dynamic>> parseLocalThreats(String text) => _parseLocalThreats(text);
 int? extractAltitude(String text) => _extractAltitude(text);
-Map<String, dynamic> analyzeLocalThreat(String text, {int? altitudeMeters}) => _analyzeLocalThreat(text, altitudeMeters: altitudeMeters);
+int? extractSpeed(String text) => _extractSpeed(text);
+Map<String, dynamic> analyzeLocalThreat(String text, {int? altitudeMeters, int? speedKmh}) => _analyzeLocalThreat(text, altitudeMeters: altitudeMeters, speedKmh: speedKmh);
 String getSeverityForMessage(String text) => _categorizeLocalMessage(text);
 String categorizeLocalMessage(String text) => _categorizeLocalMessage(text);
 double calculateBearing(LatLng from, LatLng to) => _calculateBearing(from, to);
@@ -1326,7 +1444,8 @@ StrategicLaunchEvent? _detectStrategicLaunch(List<dynamic> messages, {DateTime? 
 
 class ThreatParser {
   static int? extractAltitude(String text) => _extractAltitude(text);
-  static Map<String, dynamic> analyzeLocalThreat(String text, {int? altitudeMeters}) => _analyzeLocalThreat(text, altitudeMeters: altitudeMeters);
+  static int? extractSpeed(String text) => _extractSpeed(text);
+  static Map<String, dynamic> analyzeLocalThreat(String text, {int? altitudeMeters, int? speedKmh}) => _analyzeLocalThreat(text, altitudeMeters: altitudeMeters, speedKmh: speedKmh);
   static List<Map<String, dynamic>> parseLocalThreats(String text) => _parseLocalThreats(text);
   static String categorizeLocalMessage(String text) => _categorizeLocalMessage(text);
   static List<dynamic> deduplicateMessages(List<dynamic> rawMsgs) => _deduplicateMessages(rawMsgs);

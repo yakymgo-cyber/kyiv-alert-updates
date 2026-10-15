@@ -259,5 +259,76 @@ void main() {
       expect(mergedPosts.contains('sk_channel/202'), isTrue);
     });
   });
+
+  group('Release v1.2.24: Speed, Bank Card Filter, Numbered Targets, "Не мінус", External Districts & Gazetteer', () {
+    test('Speed extraction and altitude cleaning', () {
+      expect(ThreatParser.extractSpeed('120 швидкість'), equals(120));
+      expect(ThreatParser.extractSpeed('550 км/год'), equals(550));
+      expect(ThreatParser.extractSpeed('швидкість: 450'), equals(450));
+      expect(ThreatParser.extractSpeed('без швидкості'), isNull);
+
+      // Speed phrases and 750 kV should NOT be parsed as altitude
+      expect(ThreatParser.extractAltitude('550 швидкість'), isNull);
+      expect(ThreatParser.extractAltitude('на Бородянку 750'), isNull);
+      expect(ThreatParser.extractAltitude('700'), equals(700));
+      expect(ThreatParser.extractAltitude('6400'), equals(6400));
+    });
+
+    test('Bank card & donation filter rejects donate posts as ignore', () {
+      expect(ThreatParser.categorizeLocalMessage('Збір на банку monobank: 4441 1110 2222 3333 на 7600 грн'), equals('ignore'));
+      expect(ThreatParser.categorizeLocalMessage('Підтримка каналу приватбанк send.monobank.ua'), equals('ignore'));
+      expect(ThreatParser.extractAltitude('4441 1110 2222 7600'), isNull);
+    });
+
+    test('Numbered targets pre-splitting assigns orderTag 1 and 2', () {
+      final threats = ThreatParser.parseLocalThreats('1 на Обухів. Другий на Згурівку');
+      expect(threats.length, equals(2));
+      expect(threats[0]['orderTag'], equals(1));
+      expect((threats[0]['path'] as List).first['name'], contains('Обухів'));
+      expect(threats[1]['orderTag'], equals(2));
+      expect((threats[1]['path'] as List).first['name'], contains('Згурів'));
+    });
+
+    test('"Не мінус" protection and dump clear phrases', () {
+      // Negated clear is NOT clear
+      expect(ThreatParser.categorizeLocalMessage('Не мінус, ще літає'), equals('danger'));
+      expect(ThreatParser.categorizeLocalMessage('ще не зник'), equals('danger'));
+      expect(ThreatParser.categorizeLocalMessage('не збито'), equals('danger'));
+
+      // Real dump clear phrases
+      expect(ThreatParser.categorizeLocalMessage('все наче'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('ніби все'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('нема його'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('-1'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('ушов назад'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('втрачено над водосховищем'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('попередньо збили'), equals('clear'));
+    });
+
+    test('External district hashtag and phrase rejection without Kyiv mention', () {
+      expect(ThreatParser.categorizeLocalMessage('БпЛА в напрямку #харківський_район'), equals('ignore'));
+      expect(ThreatParser.categorizeLocalMessage('Шахед зайшов в дніпровський район'), equals('ignore'));
+      expect(ThreatParser.categorizeLocalMessage('Шахед зайшов в дніпровський район Києва'), equals('danger'));
+    });
+
+    test('New gazetteer locations and Vietnam air defense slang', () {
+      expect(kKyivLocations.containsKey('софія резиденс'), isTrue);
+      expect(kKyivLocations.containsKey('софія'), isTrue);
+      expect(kKyivLocations.containsKey('б.ц'), isTrue);
+      expect(kKyivLocations.containsKey('бц '), isTrue);
+      expect(kKyivLocations.containsKey('вишня'), isTrue);
+      expect(kKyivLocations.containsKey("жереб'ятин"), isTrue);
+      expect(kKyivLocations.containsKey('жеребятин'), isTrue);
+      expect(kKyivLocations.containsKey('жеребʼятин'), isTrue);
+      expect(kKyivLocations.containsKey('бородянку 750'), isTrue);
+      expect(kKyivLocations.containsKey('наливайківк'), isTrue);
+
+      expect(ThreatParser.categorizeLocalMessage("в'єтнам над Києвом"), equals('danger'));
+      final vThreats = ThreatParser.parseLocalThreats("в'єтнам");
+      expect(vThreats.isNotEmpty, isTrue);
+      expect((vThreats.first['path'] as List).first['name'], contains('Київ'));
+    });
+  });
 }
+
 

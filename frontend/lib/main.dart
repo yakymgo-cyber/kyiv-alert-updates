@@ -253,8 +253,8 @@ final watchedLocationsProvider = NotifierProvider<WatchedLocationsNotifier, List
   return WatchedLocationsNotifier();
 });
 
-const int kCurrentVersionCode = 26;
-const String kCurrentVersionName = '1.2.23';
+const int kCurrentVersionCode = 27;
+const String kCurrentVersionName = '1.2.24';
 
 
 class RemoteConfigNotifier extends Notifier<RemoteConfig> {
@@ -387,6 +387,7 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
   }
 
   int? extractAltitude(String text) => ThreatParser.extractAltitude(text);
+  int? extractSpeed(String text) => ThreatParser.extractSpeed(text);
   List<Map<String, dynamic>> parseLocalThreats(String text) => ThreatParser.parseLocalThreats(text);
   String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html, maxLength: maxLength);
   String categorizeLocalMessage(String text) => ThreatParser.categorizeLocalMessage(text);
@@ -475,6 +476,36 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
           String cleanText = _cleanHtmlText(textMatch.group(1)!);
           if (cleanText.isEmpty) continue;
 
+          final tLower = cleanText.toLowerCase();
+
+          // Спеціальний фільтр для каналу air_alert_ua
+          if (ch.$1 == 'air_alert_ua') {
+            const allowedAirAlertKeywords = [
+              'київ', 'бровар', 'борисп', 'бучан', 'фастів', 'обухів', 'вишгород', 'білоцерків'
+            ];
+            if (!allowedAirAlertKeywords.any((kw) => tLower.contains(kw))) {
+              continue;
+            }
+          }
+
+          // Блокування повітряних тривог інших областей (air_alert_ua хештеги)
+          const externalDistrictHashtags = [
+            '#харківський_район', '#дніпровський_район', '#камянський_район', '#кам\'янський_район',
+            '#криворізький_район', '#синельниківський_район', '#павлоградський_район', '#новомосковський_район',
+            '#чугуївський_район', '#ізюмський_район', '#богодухівський_район', '#лозівський_район',
+            '#красноградський_район', '#сумський_район', '#охтирський_район', '#конотопський_район',
+            '#шосткинський_район',
+          ];
+          final bool hasExtHashtag = externalDistrictHashtags.any((tag) => tLower.contains(tag));
+          final bool hasExtPhrase = (tLower.contains('в харківський район') ||
+              tLower.contains('у харківський район') ||
+              tLower.contains('в дніпровський район') ||
+              tLower.contains('у дніпровський район')) && !(tLower.contains('київ') || tLower.contains('києв'));
+
+          if (hasExtHashtag || hasExtPhrase) {
+            continue;
+          }
+
           final msgType = _categorizeLocalMessage(cleanText);
           if (msgType == 'ignore') continue;
 
@@ -486,8 +517,6 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
             'устинівк', 'широке', 'кривий ріг', 'херсонщин', 'миколаївщин', 'запоріжж',
             'дніпропетров', 'харківщин', 'сумщин', 'донеччин', 'луганщин', 'одещин'
           ];
-
-          final tLower = cleanText.toLowerCase();
           final bool hasGlobalStopWord = globalDigestStopWords.any((sw) {
             if (sw == 'олександрі') {
               return tLower.contains('олександрі') && !tLower.contains('олександрів');
@@ -2103,26 +2132,92 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   msgTextLower.contains('пуск') ||
                                   _dynamicDangerKeywords.any((k) => msgTextLower.contains(k));
 
+                              final bool isNegatedClear = msgTextLower.contains('не мінус') ||
+                                  msgTextLower.contains('не зник') ||
+                                  msgTextLower.contains('не збито');
+
                               // Якщо повідомлено про збиття конкретної цілі ("немає його, збиття, холодні ноги") —
                               // помічаємо як збиту/втрачену на 25 секунд
-                              if (msgTextLower.contains('немає його') ||
+                              final bool isDestroyedMsg = !isNegatedClear && (
+                                  msgTextLower.contains('немає його') ||
+                                  msgTextLower.contains('нема його') ||
                                   msgTextLower.contains('збиття') ||
                                   msgTextLower.contains('збито') ||
+                                  msgTextLower.contains('попередньо збили') ||
                                   msgTextLower.contains('мінус') ||
+                                  msgTextLower.contains('-1') ||
                                   msgTextLower.contains('холодні ноги') ||
                                   msgTextLower.contains('👣') ||
                                   msgTextLower.contains('здох') ||
                                   msgTextLower.contains('все він') ||
                                   msgTextLower.contains('все походу') ||
+                                  msgTextLower.contains('все наче') ||
+                                  msgTextLower.contains('ніби все') ||
+                                  msgTextLower.contains('ушов назад') ||
+                                  msgTextLower.contains('втрачено над') ||
                                   msgTextLower.contains('посадили') ||
                                   msgTextLower.contains('приземлили') ||
                                   msgTextLower.contains('ліквідовано') ||
-                                  msgTextLower.contains('знищено')) {
+                                  msgTextLower.contains('знищено'));
+
+                              if (isDestroyedMsg) {
                                 if (threats.isNotEmpty) {
-                                  final lastTarget = threats.last;
-                                  lastTarget['isDestroyed'] = true;
-                                  lastTarget['destroyedAt'] = msgTime;
-                                  final p = (lastTarget['path'] as List<LatLng>?) ?? [];
+                                  // Перевірка чи вказано порядковий номер цілі (orderTag)
+                                  int? targetOrderTag;
+                                  if (msgTextLower.contains('перший') || msgTextLower.contains('1-й') || msgTextLower.contains('1й')) {
+                                    targetOrderTag = 1;
+                                  } else if (msgTextLower.contains('другий') || msgTextLower.contains('2-й') || msgTextLower.contains('2й')) {
+                                    targetOrderTag = 2;
+                                  } else if (msgTextLower.contains('третій') || msgTextLower.contains('3-й') || msgTextLower.contains('3й')) {
+                                    targetOrderTag = 3;
+                                  }
+
+                                  // Перевірка чи вказано конкретну локацію цілі: "Той що Брусилів мінус" або "Брусилів мінус"
+                                  String? matchedLocationKey;
+                                  for (final k in _kKyivLocations.keys) {
+                                    if (k.length >= 4 && msgTextLower.contains(k)) {
+                                      matchedLocationKey = k;
+                                      break;
+                                    }
+                                  }
+
+                                  Map<String, dynamic>? targetToDestroy;
+
+                                  if (targetOrderTag != null) {
+                                    for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                      if (threats[ti]['orderTag'] == targetOrderTag && threats[ti]['isDestroyed'] != true) {
+                                        targetToDestroy = threats[ti];
+                                        break;
+                                      }
+                                    }
+                                  }
+
+                                  if (targetToDestroy == null && matchedLocationKey != null) {
+                                    for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                      final t = threats[ti];
+                                      if (t['isDestroyed'] == true) continue;
+                                      final r = (t['route'] ?? '').toString().toLowerCase();
+                                      final lNames = (t['locNames'] as List?)?.map((e) => e.toString().toLowerCase()).toList() ?? [];
+                                      if (r.contains(matchedLocationKey) || lNames.any((ln) => ln.contains(matchedLocationKey!))) {
+                                        targetToDestroy = t;
+                                        break;
+                                      }
+                                    }
+                                  }
+
+                                  if (targetToDestroy == null) {
+                                    for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                      if (threats[ti]['isDestroyed'] != true) {
+                                        targetToDestroy = threats[ti];
+                                        break;
+                                      }
+                                    }
+                                    targetToDestroy ??= threats.last;
+                                  }
+
+                                  targetToDestroy['isDestroyed'] = true;
+                                  targetToDestroy['destroyedAt'] = msgTime;
+                                  final p = (targetToDestroy['path'] as List<LatLng>?) ?? [];
                                   if (p.isNotEmpty) {
                                     recentlyClearedLocations.add((point: p.last, time: msgTime, channel: msg['channel']?.toString()));
                                   }
@@ -2132,7 +2227,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                               // Якщо в хронології вийшло повідомлення про відбій / чисто / дорозвідку / втрату цілі —
                               // стираємо старі цілі відповідно до сектора (Київ чи вся область)
-                              final bool isClearMsg = msg['type'] == 'clear' ||
+                              final bool isClearMsg = !isNegatedClear && (msg['type'] == 'clear' ||
                                   msgTextLower.contains('відбій') ||
                                   msgTextLower.contains('чисто') ||
                                   msgTextLower.contains('дорозвідка') ||
@@ -2141,6 +2236,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   msgTextLower.contains('тихо') ||
                                   msgTextLower.contains('знят') ||
                                   msgTextLower.contains('немає') ||
+                                  msgTextLower.contains('нема його') ||
                                   msgTextLower.contains('не спостерігається') ||
                                   msgTextLower.contains('без фіксаці') ||
                                   msgTextLower.contains('фіксацій немає') ||
@@ -2148,11 +2244,15 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   msgTextLower.contains('чисте небо') ||
                                   msgTextLower.contains('попередньо чисто') ||
                                   msgTextLower.contains('все походу') ||
+                                  msgTextLower.contains('все наче') ||
+                                  msgTextLower.contains('ніби все') ||
+                                  msgTextLower.contains('ушов назад') ||
+                                  msgTextLower.contains('втрачено над') ||
                                   msgTextLower.contains('та все, нема') ||
                                   msgTextLower.contains('нема вже') ||
                                   msgTextLower.contains('знив') ||
                                   msgTextLower.contains('зник') ||
-                                  _dynamicClearKeywords.any((k) => msgTextLower.contains(k));
+                                  _dynamicClearKeywords.any((k) => msgTextLower.contains(k)));
 
                               if (isClearMsg) {
                                 bool onlyClearUavs = (msgTextLower.contains('бпла') || msgTextLower.contains('шахед') || msgTextLower.contains('мопед') || msgTextLower.contains('дрон')) && !msgTextLower.contains('загроза бпла') && !msgTextLower.contains('загроза шахед');
@@ -2557,13 +2657,14 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         if (existingIsJet && rawType == 'shahed' && !hasPistonDroneInMsg) {
                                           rawType = 'shahed_jet';
                                           effectiveLabel = _getDefaultThreatLabel('shahed_jet');
-                                          speed = 480.0;
+                                          speed = math.max((existing['speed'] as num?)?.toDouble() ?? 480.0, 480.0);
                                         }
                                         if (!existingIsMissile || rawType.contains('missile') || rawType == 'kab') {
                                           existing['type'] = rawType;
                                           existing['label'] = effectiveLabel;
-                                          existing['speed'] = speed;
+                                          existing['speed'] = (t['speed'] as num?)?.toDouble() ?? speed;
                                         }
+                                        if (t['orderTag'] != null) existing['orderTag'] ??= t['orderTag'];
                                         if (t['isCircling'] == true) existing['isCircling'] = true;
                                         if (t['altitude'] != null) existing['altitude'] = t['altitude'];
                                         if (t['altitudeMeters'] != null) {
@@ -2644,14 +2745,15 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           if (existingIsJet && rawType == 'shahed' && !hasPistonDroneInMsg) {
                                             rawType = 'shahed_jet';
                                             effectiveLabel = _getDefaultThreatLabel('shahed_jet');
-                                            speed = 480.0;
+                                            speed = math.max((existing['speed'] as num?)?.toDouble() ?? 480.0, 480.0);
                                           }
 
                                           if (!existingIsMissile || rawType.contains('missile') || rawType == 'kab') {
                                             existing['type'] = rawType;
                                             existing['label'] = effectiveLabel;
-                                            existing['speed'] = speed;
+                                            existing['speed'] = (t['speed'] as num?)?.toDouble() ?? speed;
                                           }
+                                          if (t['orderTag'] != null) existing['orderTag'] ??= t['orderTag'];
                                           if (t['isCircling'] == true) existing['isCircling'] = true;
                                           if (t['altitude'] != null) existing['altitude'] = t['altitude'];
                                           if (t['altitudeMeters'] != null) {
@@ -2694,6 +2796,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         final double timeDiffSeconds = msgTime.difference(existingTime).inSeconds.abs().toDouble();
 
                                         if (existing['msgId'] == msg['id']) {
+                                          continue;
+                                        }
+
+                                        // Підтримка нумерованих цілей ("Перший / Другий")
+                                        if (t['orderTag'] != null && existing['orderTag'] != null && existing['orderTag'] != t['orderTag']) {
                                           continue;
                                         }
 
@@ -2744,7 +2851,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         // а) Крос-канальна дедуплікація
                                         final existingChannel = existing['channel']?.toString();
                                         final msgChannel = msg['channel']?.toString();
-                                        final bool isCrossChannelDuplicate = (existingChannel != null && msgChannel != null && existingChannel != msgChannel) &&
+                                        final bool isSameChannel = (existingChannel != null && msgChannel != null && existingChannel == msgChannel);
+                                        final bool isCrossChannelDuplicate = (existingChannel != null && msgChannel != null && !isSameChannel) &&
                                             timeDiffSeconds <= 90.0 &&
                                             distFromExtrapolatedMeters <= 5000.0;
 
@@ -2763,6 +2871,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           if (t['altitude'] != null) existing['altitude'] = t['altitude'];
                                           if (t['altitudeMeters'] != null) existing['altitudeMeters'] = t['altitudeMeters'];
                                           if (t['isDescending'] == true) existing['isDescending'] = true;
+                                          if (t['orderTag'] != null) existing['orderTag'] ??= t['orderTag'];
                                           mergedIntoExisting = true;
                                           break;
                                         }
@@ -2771,8 +2880,13 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         final bool isAnyMissile = isMissileThreat || existingIsMissile || activeBallisticOrMissileContext;
                                         final bool isJetThreat = (existingType == 'shahed_jet' || rawType == 'shahed_jet');
 
+                                        final bool isSequentialSameChannelSinglePoint = isSameChannel &&
+                                            path.length == 1 &&
+                                            timeDiffSeconds <= 60.0 &&
+                                            !hasMultiTargetMarker;
+
                                         if (!isAnyMissile && !isJetThreat) {
-                                          if (distFromExtrapolatedMeters > 22000.0) {
+                                          if (distFromExtrapolatedMeters > (isSequentialSameChannelSinglePoint ? 14000.0 : 22000.0)) {
                                             continue;
                                           }
                                         } else if (isJetThreat) {
@@ -2792,7 +2906,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                             : (isJetThreat
                                                 ? (effSpeed * timeDiffHours * 1.6).clamp(10.0, 65.0)
                                                 : (effSpeed * timeDiffHours * 1.4).clamp(4.0, 22.0));
-                                        if (!isAnyMissile && !isJetThreat && path.length == 1 && timeDiffSeconds <= 120.0) {
+                                        if (isSequentialSameChannelSinglePoint) {
+                                          maxAllowedKm = math.max(maxAllowedKm, 14.0);
+                                        } else if (!isAnyMissile && !isJetThreat && path.length == 1 && timeDiffSeconds <= 120.0) {
                                           maxAllowedKm = math.min(maxAllowedKm, 6.5);
                                         }
                                         if (distFromExtrapolatedMeters > maxAllowedKm * 1000.0) {
@@ -2808,9 +2924,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         } else if (isJetThreat) {
                                           if (!hasPistonDroneInMsg) {
                                             existing['type'] = 'shahed_jet';
-                                            existing['speed'] = 480.0;
+                                            existing['speed'] = math.max((existing['speed'] as num?)?.toDouble() ?? 480.0, (t['speed'] as num?)?.toDouble() ?? 480.0);
                                             existing['label'] = 'Реактивний БпЛА';
                                           }
+                                        } else if (t['speed'] != null && (t['speed'] as num) > 0) {
+                                          existing['speed'] = (t['speed'] as num).toDouble();
                                         }
 
                                         final existingWaypoints = (existing['waypoints'] as List<LatLng>?) ?? List<LatLng>.from(existingPath);
@@ -2867,6 +2985,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           existing['altitudeMeters'] = newAlt;
                                         }
                                         if (t['isDescending'] == true) existing['isDescending'] = true;
+                                        if (t['orderTag'] != null) existing['orderTag'] ??= t['orderTag'];
                                         mergedIntoExisting = true;
                                         break;
                                       }
@@ -2885,7 +3004,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       'route': initialRoute,
                                       'isExitingOblast': isExitingOblast,
                                       'ttl': getThreatTtlSeconds(rawType, isExitingOblast: isExitingOblast),
-                                      'speed': speed,
+                                      'speed': (t['speed'] as num?)?.toDouble() ?? speed,
+                                      'orderTag': t['orderTag'],
                                       'path': path,
                                       'waypoints': List<LatLng>.from(path),
                                       'lastPostId': msgPostId,
@@ -2994,6 +3114,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           targetThreat['label'] = 'Реактивний БпЛА';
                                           targetThreat['speed'] = 480.0;
                                         }
+                                      } else if (targetThreat['type'] == 'shahed_jet') {
+                                        // НІКОЛИ не понижувати вже встановлений тип shahed_jet назад до shahed, коли висота падає нижче 2000 м
+                                        targetThreat['isDescending'] = true;
+                                        targetThreat['speed'] = math.max((targetThreat['speed'] as num?)?.toDouble() ?? 480.0, 480.0);
                                       } else if (alt >= 2000 && targetThreat['type'] == 'shahed') {
                                         targetThreat['type'] = 'shahed_jet';
                                         targetThreat['label'] = 'Реактивний БпЛА';

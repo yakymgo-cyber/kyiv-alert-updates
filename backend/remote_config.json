@@ -1,8 +1,8 @@
 {
-  "version_code": 26,
-  "version_name": "1.2.23",
-  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.23/app-release.apk",
-  "changelog": "Виправлення маршрутів в області, пріоритет словника над кешем, крос-канальна дедуплікація, ланцюжки реплаїв та інверсія векторів",
+  "version_code": 27,
+  "version_name": "1.2.24",
+  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.24/app-release.apk",
+  "changelog": "Точне витягування висоти та швидкості, фільтр донатів, підтримка нумерованих цілей та збереження реактивних БпЛА",
   "extra_locations": {
     "новосілки": {
       "lat": 50.3547,
