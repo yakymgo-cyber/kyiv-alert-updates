@@ -253,8 +253,8 @@ final watchedLocationsProvider = NotifierProvider<WatchedLocationsNotifier, List
   return WatchedLocationsNotifier();
 });
 
-const int kCurrentVersionCode = 27;
-const String kCurrentVersionName = '1.2.24';
+const int kCurrentVersionCode = 28;
+const String kCurrentVersionName = '1.2.25';
 
 
 class RemoteConfigNotifier extends Notifier<RemoteConfig> {
@@ -2287,7 +2287,13 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     final p = (t['path'] as List<LatLng>).last;
                                     final shouldRemove = const Distance().as(LengthUnit.Meter, kyivCenter, p) <= 18000;
                                     if (shouldRemove) {
-                                      recentlyClearedLocations.add((point: p, time: msgTime, channel: msg['channel']?.toString()));
+                                      final pList = (t['waypoints'] as List<LatLng>?) ?? (t['path'] as List<LatLng>?) ?? [p];
+                                      for (final pt in pList) {
+                                        recentlyClearedLocations.add((point: pt, time: msgTime, channel: msg['channel']?.toString()));
+                                      }
+                                      if (_selectedThreatMsgId != null && (_selectedThreatMsgId == t['msgId'] || (t['historyMsgIds'] as Set?)?.contains(_selectedThreatMsgId) == true)) {
+                                        _selectedThreatMsgId = null;
+                                      }
                                     }
                                     return shouldRemove;
                                   });
@@ -2296,9 +2302,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   threats.removeWhere((t) {
                                     if (onlyClearUavs && !onlyClearMissiles && (t['type'] == 'missile_ballistic' || t['type'] == 'missile_cruise' || t['type'] == 'missile_hypersonic' || t['type'] == 'missile_supersonic' || t['type'] == 'kab')) return false;
                                     if (onlyClearMissiles && !onlyClearUavs && !t['type'].toString().contains('missile')) return false;
-                                    final p = (t['path'] as List<LatLng>?)?.last;
-                                    if (p != null) {
-                                      recentlyClearedLocations.add((point: p, time: msgTime, channel: msg['channel']?.toString()));
+                                    final pList = (t['waypoints'] as List<LatLng>?) ?? (t['path'] as List<LatLng>?) ?? [];
+                                    for (final pt in pList) {
+                                      recentlyClearedLocations.add((point: pt, time: msgTime, channel: msg['channel']?.toString()));
+                                    }
+                                    if (_selectedThreatMsgId != null && (_selectedThreatMsgId == t['msgId'] || (t['historyMsgIds'] as Set?)?.contains(_selectedThreatMsgId) == true)) {
+                                      _selectedThreatMsgId = null;
                                     }
                                     return true;
                                   });
@@ -2320,7 +2329,13 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         return const Distance().as(LengthUnit.Meter, locPt, path.last) <= 14000;
                                       });
                                       if (shouldRemove) {
-                                        recentlyClearedLocations.add((point: path.last, time: msgTime, channel: msg['channel']?.toString()));
+                                        final pList = (t['waypoints'] as List<LatLng>?) ?? (t['path'] as List<LatLng>?) ?? path;
+                                        for (final pt in pList) {
+                                          recentlyClearedLocations.add((point: pt, time: msgTime, channel: msg['channel']?.toString()));
+                                        }
+                                        if (_selectedThreatMsgId != null && (_selectedThreatMsgId == t['msgId'] || (t['historyMsgIds'] as Set?)?.contains(_selectedThreatMsgId) == true)) {
+                                          _selectedThreatMsgId = null;
+                                        }
                                       }
                                       return shouldRemove;
                                     });
@@ -2359,6 +2374,48 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       }
 
                                       // 2. Якщо не знайдено за reply — шукаємо найновішу загрозу від цього ж каналу (до 10 хв)
+                                      // 1.1 Reply за quoted text
+                                      final replyQuoted = (msg['reply_quoted_text'] ?? msg['replyQuotedText'])?.toString().toLowerCase().trim();
+                                      if (targetIdx == -1 && replyQuoted != null && replyQuoted.isNotEmpty) {
+                                        final List<String> quotedLocKeys = [];
+                                        for (final k in _kKyivLocations.keys) {
+                                          if (k.length >= 3 && replyQuoted.contains(k)) {
+                                            quotedLocKeys.add(k);
+                                          }
+                                        }
+                                        for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                          final candidate = threats[ti];
+                                          if (msgChannel != null && candidate['channel'] != null && candidate['channel'] != msgChannel) {
+                                            continue;
+                                          }
+                                          final r = (candidate['route'] ?? '').toString().toLowerCase();
+                                          final txt = (candidate['text'] ?? '').toString().toLowerCase();
+                                          final rawT = (candidate['rawText'] ?? '').toString().toLowerCase();
+                                          final lNames = (candidate['locNames'] as List?)?.map((e) => e.toString().toLowerCase()).toList() ?? [];
+                                          bool match = quotedLocKeys.any((k) => r.contains(k) || txt.contains(k) || rawT.contains(k) || lNames.any((ln) => ln.contains(k)));
+                                          if (!match && txt.isNotEmpty && (replyQuoted.contains(txt) || txt.contains(replyQuoted))) {
+                                            match = true;
+                                          }
+                                          if (match) {
+                                            targetIdx = ti;
+                                            break;
+                                          }
+                                        }
+                                        if (targetIdx == -1 && quotedLocKeys.isNotEmpty) {
+                                          for (int ti = threats.length - 1; ti >= 0; ti--) {
+                                            final candidate = threats[ti];
+                                            final r = (candidate['route'] ?? '').toString().toLowerCase();
+                                            final txt = (candidate['text'] ?? '').toString().toLowerCase();
+                                            final rawT = (candidate['rawText'] ?? '').toString().toLowerCase();
+                                            final lNames = (candidate['locNames'] as List?)?.map((e) => e.toString().toLowerCase()).toList() ?? [];
+                                            if (quotedLocKeys.any((k) => r.contains(k) || txt.contains(k) || rawT.contains(k) || lNames.any((ln) => ln.contains(k)))) {
+                                              targetIdx = ti;
+                                              break;
+                                            }
+                                          }
+                                        }
+                                      }
+
                                       if (targetIdx == -1 && msgChannel != null) {
                                         for (int ti = threats.length - 1; ti >= 0; ti--) {
                                           final tCh = threats[ti]['channel']?.toString();
@@ -2383,9 +2440,13 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                                       if (targetIdx != -1) {
                                         final cleared = threats.removeAt(targetIdx);
-                                        final p = (cleared['path'] as List<LatLng>?) ?? [];
-                                        if (p.isNotEmpty) {
-                                          recentlyClearedLocations.add((point: p.last, time: msgTime, channel: msg['channel']?.toString()));
+                                        cleared['isDestroyed'] = true;
+                                        final pList = (cleared['waypoints'] as List<LatLng>?) ?? (cleared['path'] as List<LatLng>?) ?? [];
+                                        for (final pt in pList) {
+                                          recentlyClearedLocations.add((point: pt, time: msgTime, channel: msg['channel']?.toString()));
+                                        }
+                                        if (_selectedThreatMsgId != null && (_selectedThreatMsgId == cleared['msgId'] || (cleared['historyMsgIds'] as Set?)?.contains(_selectedThreatMsgId) == true)) {
+                                          _selectedThreatMsgId = null;
                                         }
                                       }
                                     }
@@ -2476,21 +2537,24 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       msgTextLower.contains('ще 1') ||
                                       msgTextLower.contains('ще 2');
 
-                                  if (path.length == 1 && !hasMultiTargetWords) {
-                                    final singlePt = path.first;
+                                  if (!hasMultiTargetWords && path.isNotEmpty) {
+                                    final checkPts = (t['waypoints'] as List<LatLng>?) ?? path;
                                     bool isResurrected = false;
-                                    for (final clr in recentlyClearedLocations) {
-                                      final secDiff = msgTime.difference(clr.time).inSeconds.abs();
-                                      if (secDiff <= 90) {
-                                        final dMeters = const Distance().as(LengthUnit.Meter, clr.point, singlePt);
-                                        if (dMeters <= 5000.0) {
-                                          isResurrected = true;
-                                          break;
+                                    for (final pt in checkPts) {
+                                      for (final clr in recentlyClearedLocations) {
+                                        final secDiff = msgTime.difference(clr.time).inSeconds.abs();
+                                        if (secDiff <= 120) {
+                                          final dMeters = const Distance().as(LengthUnit.Meter, clr.point, pt);
+                                          if (dMeters <= 5000.0) {
+                                            isResurrected = true;
+                                            break;
+                                          }
                                         }
                                       }
+                                      if (isResurrected) break;
                                     }
                                     if (isResurrected) {
-                                      continue; // Ігноруємо запізніле повідомлення, щоб не воскрешати щойно зниклу ціль
+                                      continue;
                                     }
                                   }
 
@@ -3153,10 +3217,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                             // Залишаємо активні цілі за Smart TTL (балістика 120с, КР 180с, БпЛА 300с, вихід з області 45с) та щойно збиті цілі (25с)
                             threats = threats.where((t) {
-                              if (t['isDestroyed'] == true) {
-                                final destroyedAt = (t['destroyedAt'] as DateTime?) ?? (t['lastUpdated'] as DateTime?) ?? now;
-                                return now.difference(destroyedAt).inSeconds <= 25;
-                              }
+                              if (t['isDestroyed'] == true) return false;
                               final lastUpd = t['lastUpdated'] as DateTime?;
                               if (lastUpd == null) return true;
                               final int ttl = (t['ttl'] as int?) ?? getThreatTtlSeconds(t['type']?.toString() ?? '', isExitingOblast: t['isExitingOblast'] == true);
@@ -5144,10 +5205,11 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
           final path = t['path'] as List<LatLng>;
           if (path.isEmpty) continue;
           final bool isDestroyed = t['isDestroyed'] == true;
+          if (isDestroyed) continue;
           final msgTime = (t['lastUpdated'] as DateTime?) ?? effectiveNow;
           final elapsedSec = effectiveNow.difference(msgTime).inMilliseconds / 1000.0;
           final int threatTtl = (t['ttl'] as int?) ?? getThreatTtlSeconds(t['type']?.toString() ?? '', isExitingOblast: t['isExitingOblast'] == true);
-          if (elapsedSec > threatTtl && !isDestroyed) continue;
+          if (elapsedSec > threatTtl) continue;
 
           final speedKmh = (t['speed'] as num?)?.toDouble() ?? 500.0;
           final speedMs = speedKmh * (1000.0 / 3600.0);
@@ -5321,6 +5383,7 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
         for (var i = 0; i < widget.threats.length; i++) {
           if (!activePositions.containsKey(i)) continue;
           final t = widget.threats[i];
+          if (t['isDestroyed'] == true) continue;
           final path = t['path'] as List<LatLng>;
           final currentPos = activePositions[i]!;
           final rotationAngle = activeRotations[i]!;

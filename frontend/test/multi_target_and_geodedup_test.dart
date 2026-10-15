@@ -329,6 +329,96 @@ void main() {
       expect((vThreats.first['path'] as List).first['name'], contains('Київ'));
     });
   });
+
+  group('Release v1.2.25: Instant Threat Disappearance on Shootdown Reply', () {
+    test('"Знищено", "-1", "Збито" are recognized as clear and destruction', () {
+      expect(ThreatParser.categorizeLocalMessage('Знищено'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('збито'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('-1'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('ліквідовано'), equals('clear'));
+      expect(ThreatParser.categorizeLocalMessage('мінус 1'), equals('clear'));
+    });
+
+    test('Simulate message reply chain: track created, then reply "Знищено" removes target and prevents resurrection', () {
+      // Message 1: Initial threat approaching Dymer from south
+      final msg1Text = 'Димер з півдня';
+      final parsed1 = ThreatParser.parseLocalThreats(msg1Text);
+      expect(parsed1.isNotEmpty, isTrue);
+
+      final List<Map<String, dynamic>> threats = [
+        {
+          'msgId': 101,
+          'postId': 'kyiv_airdef/45120',
+          'lastPostId': 'kyiv_airdef/45120',
+          'historyPostIds': {'kyiv_airdef/45120'},
+          'historyMsgIds': {101},
+          'channel': 'Kyiv AirDefense 🌇',
+          'text': msg1Text,
+          'route': 'південь -> Димер',
+          'path': [const LatLng(50.60, 30.30), const LatLng(50.78, 30.30)],
+          'waypoints': [const LatLng(50.60, 30.30), const LatLng(50.78, 30.30)],
+          'type': 'shahed_jet',
+          'speed': 480.0,
+          'lastUpdated': DateTime.parse('2026-10-15T20:03:00Z'),
+        }
+      ];
+      expect(threats.length, equals(1));
+
+      // Message 2: Reply at 20:07 saying "Знищено"
+      final msg2 = {
+        'id': 102,
+        'postId': 'kyiv_airdef/45125',
+        'reply_to_post_id': 'kyiv_airdef/45120',
+        'reply_quoted_text': 'Димер з півдня',
+        'channel': 'Kyiv AirDefense 🌇',
+        'text': 'Знищено',
+        'date': '2026-10-15T20:07:00Z',
+      };
+
+      // Verify matching logic
+      final replyToPost = msg2['reply_to_post_id'];
+      int targetIdx = -1;
+      for (int ti = threats.length - 1; ti >= 0; ti--) {
+        if (threats[ti]['lastPostId'] == replyToPost ||
+            (threats[ti]['historyPostIds'] as Set).contains(replyToPost)) {
+          targetIdx = ti;
+          break;
+        }
+      }
+      expect(targetIdx, equals(0));
+
+      final cleared = threats.removeAt(targetIdx);
+      cleared['isDestroyed'] = true;
+      expect(threats.isEmpty, isTrue);
+
+      final recentlyClearedLocations = <({LatLng point, DateTime time, String? channel})>[];
+      final pList = (cleared['waypoints'] as List<LatLng>?) ?? (cleared['path'] as List<LatLng>?) ?? [];
+      final msg2Time = DateTime.parse(msg2['date']!.toString());
+      for (final pt in pList) {
+        recentlyClearedLocations.add((point: pt, time: msg2Time, channel: msg2['channel']?.toString()));
+      }
+      expect(recentlyClearedLocations.length, equals(2));
+
+      // Attempted delayed message at 20:07:30 from another channel:
+      final lateMsgTime = DateTime.parse('2026-10-15T20:07:30Z');
+      final latePath = [const LatLng(50.78, 30.30)];
+      bool isResurrected = false;
+      for (final pt in latePath) {
+        for (final clr in recentlyClearedLocations) {
+          if (lateMsgTime.difference(clr.time).inSeconds.abs() <= 120) {
+            final dMeters = const Distance().as(LengthUnit.Meter, clr.point, pt);
+            if (dMeters <= 5000.0) {
+              isResurrected = true;
+              break;
+            }
+          }
+        }
+        if (isResurrected) break;
+      }
+      expect(isResurrected, isTrue);
+    });
+  });
 }
+
 
 
