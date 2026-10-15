@@ -521,6 +521,30 @@ void main() {
       expect(threats.length, equals(1));
       expect(threats.any((t) => t['isDestroyed'] == true), isFalse);
     });
+
+    test('Borshchahivka slang forms ("Борщаги", "на Борщазі") map to residential district and not gas station', () {
+      final threats1 = ThreatParser.parseLocalThreats('Борщаги');
+      expect(threats1.isNotEmpty, isTrue);
+      final p1 = (threats1.first['path'] as List).first;
+      expect(p1['name'], equals('Борщагівка'));
+      expect(p1['lat'], closeTo(50.4280, 0.005));
+      expect(p1['lon'], closeTo(30.3780, 0.005));
+
+      final threats2 = ThreatParser.parseLocalThreats('Шахед на Борщазі');
+      expect(threats2.isNotEmpty, isTrue);
+      final p2 = (threats2.first['path'] as List).first;
+      expect(p2['name'], equals('Борщагівка'));
+      expect(p2['lat'], closeTo(50.4280, 0.005));
+
+      final threats3 = ThreatParser.parseLocalThreats('Курс на Південну Борщагівку');
+      expect(threats3.isNotEmpty, isTrue);
+      final p3 = (threats3.first['path'] as List).first;
+      expect(p3['name'], equals('Південна Борщагівка'));
+
+      // Food / restaurant "борщ" is not parsed as an air defense target
+      final threatsBorshch = ThreatParser.parseLocalThreats('Зварили смачний борщ');
+      expect(threatsBorshch.isEmpty, isTrue);
+    });
   });
 }
 

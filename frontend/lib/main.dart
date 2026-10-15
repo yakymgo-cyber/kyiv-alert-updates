@@ -253,8 +253,8 @@ final watchedLocationsProvider = NotifierProvider<WatchedLocationsNotifier, List
   return WatchedLocationsNotifier();
 });
 
-const int kCurrentVersionCode = 30;
-const String kCurrentVersionName = '1.2.27';
+const int kCurrentVersionCode = 31;
+const String kCurrentVersionName = '1.2.28';
 
 
 class RemoteConfigNotifier extends Notifier<RemoteConfig> {
@@ -3184,14 +3184,27 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                 // Повідомлення без локацій: прив'язка одиночних повідомлень висоти / зниження до останньої активної цілі
                                 final text = msg['text']?.toString() ?? '';
                                 final alt = ref.read(messagesProvider.notifier).extractAltitude(text);
+                                final speed = ref.read(messagesProvider.notifier).extractSpeed(text);
                                 final isDescKeyword = msgTextLower.contains('зниження') ||
                                     msgTextLower.contains('знижується') ||
                                     msgTextLower.contains('падає') ||
                                     msgTextLower.contains('пікірує') ||
                                     msgTextLower.contains('скинув висоту') ||
                                     msgTextLower.contains('низько');
+                                final bool isCirclingKeyword = msgTextLower.contains('літає') ||
+                                    msgTextLower.contains('кружля') ||
+                                    msgTextLower.contains('крутить') ||
+                                    msgTextLower.contains('намоту') ||
+                                    msgTextLower.contains('мотає') ||
+                                    msgTextLower.contains('мотають') ||
+                                    msgTextLower.contains('нарізає') ||
+                                    msgTextLower.contains('накручу') ||
+                                    msgTextLower.contains('круги');
+                                final replyToId = msg['reply_to_msg_id'] ?? msg['replyToId'];
+                                final replyToPostId = normPost(msg['reply_to_post_id'] ?? msg['replyToPostId']);
+                                final bool hasExplicitReply = replyToPostId != null || replyToId != null;
 
-                                if (alt != null || isDescKeyword) {
+                                if (alt != null || speed != null || isCirclingKeyword || isDescKeyword || hasExplicitReply) {
                                     if (alt != null) {
                                       activeBallisticOrMissileContext = false;
                                     }
@@ -3251,6 +3264,16 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   }
 
                                   if (targetThreat != null) {
+                                    if (isCirclingKeyword) {
+                                      targetThreat['isCircling'] = true;
+                                    }
+                                    if (speed != null) {
+                                      targetThreat['speed'] = speed.toDouble();
+                                      if (speed >= 350.0 && targetThreat['type'] == 'shahed') {
+                                        targetThreat['type'] = 'shahed_jet';
+                                        targetThreat['label'] = 'Реактивний БпЛА';
+                                      }
+                                    }
                                     if (alt != null) {
                                       final prevAlt = targetThreat['altitudeMeters'] as int?;
                                       if ((prevAlt != null && prevAlt - alt >= 300) || alt <= 1500 || isDescKeyword) {
@@ -4509,11 +4532,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                                 ],
                                               ),
                                               const SizedBox(height: 6),
+                                              Text('🧭 ${inspectedThreat['route']}', style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                                              const SizedBox(height: 4),
                                               Wrap(
                                                 spacing: 12,
                                                 runSpacing: 4,
                                                 children: [
-                                                  Text('🧭 ${inspectedThreat['route']}', style: const TextStyle(color: Colors.white70, fontSize: 11)),
                                                   Text('⚡ ~${(inspectedThreat['speed'] as num?)?.toInt() ?? 185} км/год', style: const TextStyle(color: Colors.white70, fontSize: 11)),
                                                   Text('📏 ${inspectedThreat['altitude'] ?? (inspectedThreat['altitudeMeters'] != null ? '${inspectedThreat['altitudeMeters']} м' : 'Висота не вказана')}', style: const TextStyle(color: Colors.white70, fontSize: 11)),
                                                   Text('⏱️ $timeAgoStr', style: const TextStyle(color: Colors.amberAccent, fontSize: 11, fontWeight: FontWeight.bold)),

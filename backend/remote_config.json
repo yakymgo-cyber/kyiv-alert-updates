@@ -1,8 +1,8 @@
 {
-  "version_code": 30,
-  "version_name": "1.2.27",
-  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.27/app-release.apk",
-  "changelog": "Повернення зеленої картки збиття/втрати цілі на мапі з виключенням з активних цілей",
+  "version_code": 31,
+  "version_name": "1.2.28",
+  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.28/app-release.apk",
+  "changelog": "Виправлення координат Борщагівки, кружляння (круги мотає) замість села Круги та м. Лук'янівка",
   "extra_locations": {
     "новосілки": {
       "lat": 50.3547,

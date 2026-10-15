@@ -732,6 +732,47 @@ void main() {
       expect(t2.first['type'], equals('shahed_jet'));
       expect(t2.first['speed'], equals(480.0));
     });
+
+    test('Recognizes Borshchahivka slang and correct residential coordinates', () {
+      final notifier = MessagesNotifier();
+      final t1 = notifier.parseLocalThreats('БпЛА на Борщаги');
+      expect(t1.isNotEmpty, isTrue);
+      expect(t1.first['path'].last['name'], equals('Борщагівка'));
+      expect(t1.first['path'].last['lat'], closeTo(50.4280, 0.001));
+      expect(t1.first['path'].last['lon'], closeTo(30.3780, 0.001));
+
+      final t2 = notifier.parseLocalThreats('Ціль на Борщазі');
+      expect(t2.isNotEmpty, isTrue);
+      expect(t2.first['path'].last['name'], equals('Борщагівка'));
+
+      // Bare food word or gas station does NOT match as a target
+      final t3 = notifier.parseLocalThreats('Їмо смачний борщ на АЗС КЛО');
+      expect(t3.isEmpty, isTrue);
+    });
+
+    test('Distinguishes circling slang "круги мотає" from village Krugi', () {
+      final notifier = MessagesNotifier();
+      // Circling slang should NOT resolve to the village of Krugi (Vyshhorod district)
+      final tCircling = notifier.parseLocalThreats('на 5400 круги мотає');
+      expect(tCircling.isEmpty, isTrue);
+
+      final tCircling2 = notifier.parseLocalThreats('мотає круги');
+      expect(tCircling2.isEmpty, isTrue);
+
+      // Explicit directional preposition towards the village DOES resolve to village Krugi
+      final tVillage = notifier.parseLocalThreats('БпЛА через с. Круги на Вишгород');
+      expect(tVillage.isNotEmpty, isTrue);
+      expect(tVillage.first['path'].any((p) => p['name'] == 'Круги'), isTrue);
+    });
+
+    test('Lukianivka resolves to Metro Lukianivska coordinates', () {
+      final notifier = MessagesNotifier();
+      final t = notifier.parseLocalThreats("БпЛА на Лук'янівку");
+      expect(t.isNotEmpty, isTrue);
+      expect(t.first['path'].last['name'], equals("м. Лук'янівка"));
+      expect(t.first['path'].last['lat'], closeTo(50.4628, 0.001));
+      expect(t.first['path'].last['lon'], closeTo(30.4815, 0.001));
+    });
   });
 }
 

@@ -556,6 +556,24 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
               if (!hasDirectionalPrefix && !hasDirectionalSuffix) {
                 isFalseMatch = true;
               }
+            } else if (key == 'борщ' || key == 'борщу' || key == 'борщем') {
+              isFalseMatch = true;
+            } else if (key == 'круги') {
+              final hasCirclingVerb = searchLine.contains('мота') ||
+                  searchLine.contains('наріз') ||
+                  searchLine.contains('робит') ||
+                  searchLine.contains('вертит') ||
+                  searchLine.contains('накруч') ||
+                  searchLine.contains('кружл');
+              final hasExplicitVillagePreposition = searchLine.contains('с. круги') ||
+                  searchLine.contains('село круги') ||
+                  searchLine.contains('до кругів') ||
+                  searchLine.contains('біля кругів') ||
+                  searchLine.contains('через круги') ||
+                  searchLine.contains('повз круги');
+              if (hasCirclingVerb || !hasExplicitVillagePreposition) {
+                isFalseMatch = true;
+              }
             }
             if (!isFalseMatch) {
               rawLocs.add((idx, idx + key.length, key, data));
@@ -835,6 +853,11 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
           lineLower.contains('кружля') ||
           lineLower.contains('крутить') ||
           lineLower.contains('намоту') ||
+          lineLower.contains('мотає') ||
+          lineLower.contains('мотають') ||
+          lineLower.contains('нарізає') ||
+          lineLower.contains('накручу') ||
+          lineLower.contains('круги') ||
           RegExp(r'в районі.*?літає', caseSensitive: false).hasMatch(lineLower);
       final bool isCircling = circlingWordsInLine ||
           (lineThreat['isCircling'] == true) ||
