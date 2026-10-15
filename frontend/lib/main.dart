@@ -24,6 +24,7 @@ import 'package:frontend/ui/sheets/morning_digest_sheet.dart';
 import 'package:frontend/ui/sheets/watched_locations_sheet.dart';
 import 'package:frontend/services/voice_alert_service.dart';
 import 'package:frontend/services/live_radar_notification_service.dart';
+import 'package:frontend/services/cached_tile_provider.dart';
 
 // Ре-експорт для сумісності з тестами та зовнішніми модулями
 export 'package:frontend/models/alert_models.dart';
@@ -34,6 +35,7 @@ export 'package:frontend/ui/sheets/morning_digest_sheet.dart';
 export 'package:frontend/ui/sheets/watched_locations_sheet.dart';
 export 'package:frontend/services/voice_alert_service.dart';
 export 'package:frontend/services/live_radar_notification_service.dart';
+export 'package:frontend/services/cached_tile_provider.dart';
 
 
 // Аліаси та зв'язки для зворотної сумісності
@@ -865,6 +867,14 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
   DateTime? _lastNightWatchAlarmTime;
   DateTime? _nightWatchDismissedUntil;
   DateTime? _dismissedLaunchTimestamp;
+
+  // Мемоізація розрахунку траєкторій та загроз
+  String? _cachedTrajectorySignature;
+  List<Map<String, dynamic>> _cachedThreats = [];
+  List<Map<String, dynamic>> _cachedActiveAirDefenses = [];
+  String? _cachedNorthThreatLabel;
+  String? _cachedSouthThreatLabel;
+  bool _cachedHasMissiles = false;
 
   void _triggerNightWatchAlarm() {
     final now = DateTime.now();
@@ -1850,12 +1860,30 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                               ? DateTime.now().toUtc().add(Duration(seconds: (_replayOffsetMinutes * 60).round()))
                               : DateTime.now().toUtc();
 
-                          final List<Map<String, dynamic>> activeAirDefenses = [];
-                          final Set<String> addedAirDefLocs = {};
+                          final firstMsgId = messages.isNotEmpty ? messages.first['id'] : null;
+                          final trajectorySig = '${firstMsgId}_${messages.length}_${alerts['м. Київ']}_${alerts['Київська область']}_${_isReplayMode}_${_replayOffsetMinutes.toStringAsFixed(1)}_${now.millisecondsSinceEpoch ~/ 5000}';
 
+                          List<Map<String, dynamic>> activeAirDefenses = [];
                           String? northThreatLabel;
                           String? southThreatLabel;
-                          bool sectorThreatCancelled = false;
+                          List<Map<String, dynamic>> threats = [];
+                          bool hasMissiles = false;
+
+                          if (_cachedTrajectorySignature == trajectorySig) {
+                            activeAirDefenses = _cachedActiveAirDefenses.map((a) => Map<String, dynamic>.from(a)).toList();
+                            northThreatLabel = _cachedNorthThreatLabel;
+                            southThreatLabel = _cachedSouthThreatLabel;
+                            threats = _cachedThreats.map((t) => Map<String, dynamic>.from(t)).toList();
+                            hasMissiles = _cachedHasMissiles;
+                            if (_selectedThreatMsgId != null) {
+                              final hasSelected = threats.any((t) => t['isDestroyed'] != true && (t['msgId'] == _selectedThreatMsgId || (t['historyMsgIds'] as Set?)?.contains(_selectedThreatMsgId) == true));
+                              if (!hasSelected) {
+                                _selectedThreatMsgId = null;
+                              }
+                            }
+                          } else {
+                            final Set<String> addedAirDefLocs = {};
+                            bool sectorThreatCancelled = false;
 
                           for (var msg in messages.take(40)) {
                             if (msg['date'] == null) continue;
@@ -2008,7 +2036,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             southThreatLabel = null;
                           }
 
-                          List<Map<String, dynamic>> threats = [];
+                          threats = [];
                           final bool hasRecentDangerMsg = messages.take(25).any((m) {
                             if (m['type'] != 'danger' || m['date'] == null) return false;
                             final dt = DateTime.tryParse(m['date'].toString())?.toUtc();
@@ -3176,7 +3204,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       'path': path,
                                       'waypoints': List<LatLng>.from(path),
                                       'lastPostId': msgPostId,
-                                      'historyPostIds': <dynamic>{if (msgPostId != null) msgPostId},
+                                      'historyPostIds': <dynamic>{?msgPostId},
                                       'lastUpdated': msgTime,
                                       'staggerDelay': staggerDelay,
                                       'text': msgTextLower,
@@ -3359,7 +3387,6 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                               final path = t['path'] as List<LatLng>;
                               final txt = (t['text'] ?? '').toString().toLowerCase();
                               final rawType = (t['type'] ?? '').toString();
-                              final bool isMissile = rawType.contains('missile') || rawType == 'kab';
 
                               if (t['isDestroyed'] != true && path.length == 1 && t['isCircling'] != true) {
                                 final targetPt = path.first;
@@ -3421,7 +3448,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             }
                           }
 
-                          bool hasMissiles = threats.any((t) => 
+                          hasMissiles = threats.any((t) => 
                               t['type'] == 'missile_ballistic' || 
                               t['type'] == 'missile_hypersonic' || 
                               t['type'] == 'missile_supersonic' ||
@@ -3509,6 +3536,14 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                               } catch (_) {}
                             }
                           }
+
+                          _cachedTrajectorySignature = trajectorySig;
+                          _cachedActiveAirDefenses = activeAirDefenses.map((a) => Map<String, dynamic>.from(a)).toList();
+                          _cachedNorthThreatLabel = northThreatLabel;
+                          _cachedSouthThreatLabel = southThreatLabel;
+                          _cachedThreats = threats.map((t) => Map<String, dynamic>.from(t)).toList();
+                          _cachedHasMissiles = hasMissiles;
+                        }
                           
                           final activeWatchedLocations = watchedLocations.where((l) => l.enabled).toList();
                           final Set<String> threatLocationIds = {};
@@ -3698,6 +3733,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     child: TileLayer(
                                       urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                                       userAgentPackageName: 'ua.kyiv.alert.monitor',
+                                      tileProvider: LocalCachedTileProvider(),
                                     ),
                                   ),
                                   if (geoJsonAsync.hasValue)
@@ -5115,7 +5151,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                 ],
               ),
             ),
-            if (trailing != null) trailing,
+            ?trailing,
           ],
         ),
       ),
@@ -5335,7 +5371,10 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
       animation: _controller,
       builder: (context, child) {
         final nowMs = DateTime.now().millisecondsSinceEpoch;
-        if (_cachedLayerWidget != null && (nowMs - _lastFrameTimestampMs) < 80) {
+        final bool hasUrgentAnimation = widget.airDefenses.isNotEmpty ||
+            widget.threats.any((t) => t['isDescending'] == true && t['isDestroyed'] != true);
+        final int throttleIntervalMs = hasUrgentAnimation ? 80 : 350;
+        if (_cachedLayerWidget != null && (nowMs - _lastFrameTimestampMs) < throttleIntervalMs) {
           return _cachedLayerWidget!;
         }
         _lastFrameTimestampMs = nowMs;
