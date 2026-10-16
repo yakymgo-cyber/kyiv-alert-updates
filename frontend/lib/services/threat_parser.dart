@@ -70,12 +70,46 @@ int getThreatTtlSeconds(String rawType, {bool isExitingOblast = false}) {
       return 180;
     case 'shahed':
     case 'shahed_jet':
+      return 300; // 5 хвилин: Київ та область покриті датчиками — без фіксації 5 хв ціль вважається втраченою
     case 'uav_guided':
     case 'uav_recon':
     case 'uav_decoy':
     default:
       return 1320; // 22 хвилини активного TTL на радарі (діапазон 20-25 хв)
   }
+}
+
+/// Скільки секунд тримати знак питання на місці втрати фіксації (і шукати відновлення цілі)
+const int kLostTrackRetentionSec = 600;
+
+/// Базовий радіус невидимого кола пошуку відновлення (похибка геокодування районів), м
+const double kLostTrackBaseRadiusMeters = 3000.0;
+
+/// Типи цілей, для яких діє логіка втрати фіксації / знака питання / відновлення
+bool isLostTrackableType(String rawType) => rawType == 'shahed' || rawType == 'shahed_jet';
+
+/// Повний час життя цілі на мапі (с). Для шахедів — TTL (5 хв), але не раніше,
+/// ніж ціль долетить до останньої точки свого маршруту (якщо маршрут довший за TTL).
+int getThreatLifetimeSeconds(Map<String, dynamic> t) {
+  final String typeStr = (t['type'] ?? '').toString();
+  final bool isExiting = t['isExitingOblast'] == true;
+  final int ttl = (t['ttl'] as int?) ?? getThreatTtlSeconds(typeStr, isExitingOblast: isExiting);
+  if (isExiting || !isLostTrackableType(typeStr)) return ttl;
+
+  final dynamic path = t['path'];
+  if (path is! List || path.length < 2) return ttl;
+  final dynamic a = path[path.length - 2];
+  final dynamic b = path.last;
+  if (a is! LatLng || b is! LatLng) return ttl;
+
+  final double speedKmh = (t['speed'] as num?)?.toDouble() ?? 185.0;
+  final double speedMs = speedKmh * (1000.0 / 3600.0);
+  if (speedMs <= 0) return ttl;
+
+  final double legMeters = const Distance().as(LengthUnit.Meter, a, b);
+  final double stagger = (t['staggerDelay'] as num?)?.toDouble() ?? 0.0;
+  final int routeSec = (legMeters / speedMs + stagger).ceil();
+  return math.max(ttl, routeSec);
 }
 
 

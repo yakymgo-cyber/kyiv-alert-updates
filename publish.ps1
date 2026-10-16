@@ -24,28 +24,28 @@ Write-Host "==========================================================" -Foregro
 Write-Host "KYIV ALERT MONITOR - СИСТЕМА ВИПУСКУ РЕЛІЗУ (PUBLISH)" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
-# 1. Читання поточної версії з frontend/lib/main.dart
-$mainDartPath = Join-Path $rootDir "frontend/lib/main.dart"
-if (-not (Test-Path $mainDartPath)) {
-    Write-Error "Не знайдено файл $mainDartPath"
+# 1. Читання поточної версії з frontend/lib/models/alert_models.dart
+$alertModelsPath = Join-Path $rootDir "frontend/lib/models/alert_models.dart"
+if (-not (Test-Path $alertModelsPath)) {
+    Write-Error "Не знайдено файл $alertModelsPath"
     exit 1
 }
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-$mainDartContent = [System.IO.File]::ReadAllText($mainDartPath, [System.Text.Encoding]::UTF8)
+$alertModelsContent = [System.IO.File]::ReadAllText($alertModelsPath, [System.Text.Encoding]::UTF8)
 
-$currentCodeMatch = [regex]::Match($mainDartContent, 'const int kCurrentVersionCode = (\d+);')
-$currentNameMatch = [regex]::Match($mainDartContent, "const String kCurrentVersionName = '([^']+)';")
+$currentCodeMatch = [regex]::Match($alertModelsContent, 'const int kDefaultVersionCode = (\d+);')
+$currentNameMatch = [regex]::Match($alertModelsContent, "const String kDefaultVersionName = '([^']+)';")
 
 if (-not $currentCodeMatch.Success) {
-    Write-Error "Не вдалося знайти kCurrentVersionCode у $mainDartPath"
+    Write-Error "Не вдалося знайти kDefaultVersionCode у $alertModelsPath"
     exit 1
 }
 
 $oldCode = [int]$currentCodeMatch.Groups[1].Value
 $newCode = $oldCode + 1
 
-$oldName = if ($currentNameMatch.Success) { $currentNameMatch.Groups[1].Value } else { "1.0.0" }
+$oldName = if ($currentNameMatch.Success) { $currentNameMatch.Groups[1].Value } else { "1.2.38" }
 $parts = $oldName.Split('.')
 if ($parts.Length -eq 3) {
     $patch = [int]$parts[2] + 1
@@ -56,10 +56,19 @@ if ($parts.Length -eq 3) {
 
 Write-Host "Оновлення версії: $oldName (Build $oldCode) -> $newName (Build $newCode)" -ForegroundColor Green
 
-# Оновлення frontend/lib/main.dart
-$mainDartContent = [regex]::Replace($mainDartContent, 'const int kCurrentVersionCode = \d+;', "const int kCurrentVersionCode = $newCode;")
-$mainDartContent = [regex]::Replace($mainDartContent, "const String kCurrentVersionName = '[^']+';", "const String kCurrentVersionName = '$newName';")
-[System.IO.File]::WriteAllText($mainDartPath, $mainDartContent, $utf8NoBom)
+# Оновлення frontend/lib/models/alert_models.dart
+$alertModelsContent = [regex]::Replace($alertModelsContent, 'const int kDefaultVersionCode = \d+;', "const int kDefaultVersionCode = $newCode;")
+$alertModelsContent = [regex]::Replace($alertModelsContent, "const String kDefaultVersionName = '[^']+';", "const String kDefaultVersionName = '$newName';")
+[System.IO.File]::WriteAllText($alertModelsPath, $alertModelsContent, $utf8NoBom)
+
+# Оновлення frontend/lib/main.dart (якщо містить явні константи)
+$mainDartPath = Join-Path $rootDir "frontend/lib/main.dart"
+if (Test-Path $mainDartPath) {
+    $mainDartContent = [System.IO.File]::ReadAllText($mainDartPath, [System.Text.Encoding]::UTF8)
+    $mainDartContent = [regex]::Replace($mainDartContent, 'const int kCurrentVersionCode = \d+;', "const int kCurrentVersionCode = $newCode;")
+    $mainDartContent = [regex]::Replace($mainDartContent, "const String kCurrentVersionName = '[^']+';", "const String kCurrentVersionName = '$newName';")
+    [System.IO.File]::WriteAllText($mainDartPath, $mainDartContent, $utf8NoBom)
+}
 
 # Оновлення frontend/pubspec.yaml
 $pubspecPath = Join-Path $rootDir "frontend/pubspec.yaml"
@@ -67,15 +76,6 @@ if (Test-Path $pubspecPath) {
     $pubspecContent = [System.IO.File]::ReadAllText($pubspecPath, [System.Text.Encoding]::UTF8)
     $pubspecContent = [regex]::Replace($pubspecContent, 'version:\s*\d+\.\d+\.\d+\+\d+', "version: $newName+$newCode")
     [System.IO.File]::WriteAllText($pubspecPath, $pubspecContent, $utf8NoBom)
-}
-
-# Оновлення frontend/lib/models/alert_models.dart
-$alertModelsPath = Join-Path $rootDir "frontend/lib/models/alert_models.dart"
-if (Test-Path $alertModelsPath) {
-    $alertModelsContent = [System.IO.File]::ReadAllText($alertModelsPath, [System.Text.Encoding]::UTF8)
-    $alertModelsContent = [regex]::Replace($alertModelsContent, 'const int kDefaultVersionCode = \d+;', "const int kDefaultVersionCode = $newCode;")
-    $alertModelsContent = [regex]::Replace($alertModelsContent, "const String kDefaultVersionName = '[^']+';", "const String kDefaultVersionName = '$newName';")
-    [System.IO.File]::WriteAllText($alertModelsPath, $alertModelsContent, $utf8NoBom)
 }
 
 # Оновлення backend/main.py (дефолтний конфіг)

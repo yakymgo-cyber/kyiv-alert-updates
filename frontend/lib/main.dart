@@ -1072,6 +1072,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
   String? _cachedNorthThreatLabel;
   String? _cachedSouthThreatLabel;
   bool _cachedHasMissiles = false;
+  List<Map<String, dynamic>> _cachedLostTracks = [];
 
   void _triggerNightWatchAlarm() {
     final now = DateTime.now();
@@ -2071,6 +2072,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                           String? northThreatLabel;
                           String? southThreatLabel;
                           List<Map<String, dynamic>> threats = [];
+                          List<Map<String, dynamic>> lostTracks = [];
                           bool hasMissiles = false;
 
                           if (_cachedTrajectorySignature == trajectorySig) {
@@ -2078,6 +2080,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             northThreatLabel = _cachedNorthThreatLabel;
                             southThreatLabel = _cachedSouthThreatLabel;
                             threats = _cachedThreats.map((t) => Map<String, dynamic>.from(t)).toList();
+                            lostTracks = _cachedLostTracks.map((l) => Map<String, dynamic>.from(l)).toList();
                             hasMissiles = _cachedHasMissiles;
                             if (_selectedThreatMsgId != null) {
                               final hasSelected = threats.any((t) => t['isDestroyed'] != true && (t['msgId'] == _selectedThreatMsgId || (t['historyMsgIds'] as Set?)?.contains(_selectedThreatMsgId) == true));
@@ -2813,6 +2816,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                               // msgTime вже ініціалізовано на початку циклу
 
+                              // Довгі повідомлення (> 100 символів: попередження про ймовірні цілі майбутніх атак,
+                              // зведення тощо) не виводять цілі на карту — лише відображаються у стрічці
+                              if (rawMsgText.trim().length > 100) continue;
+
                               List<dynamic> rawThreats = (msg['threats'] as List?) ?? [];
                               if (rawThreats.isEmpty) {
                                 rawThreats = ref.read(messagesProvider.notifier).parseLocalThreats(msg['text']?.toString() ?? '');
@@ -3326,6 +3333,18 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           math.min(distFromLastPtMeters, distFromPrevConfirmedMeters),
                                         );
 
+                                        // Втрачена фіксація (шахед не фіксувався довше свого часу життя):
+                                        // відновлюємо ціль лише якщо нова точка потрапила в невидиме коло пошуку,
+                                        // яке росте від місця втрати фіксації зі швидкістю цієї цілі
+                                        if (isLostTrackableType(existingType) && existing['isExitingOblast'] != true) {
+                                          final double sinceLostSec = timeDiffSeconds - getThreatLifetimeSeconds(existing);
+                                          if (sinceLostSec > 0) {
+                                            if (sinceLostSec > kLostTrackRetentionSec) continue;
+                                            final double searchRadiusMeters = kLostTrackBaseRadiusMeters + existingSpeedMs * sinceLostSec;
+                                            if (distFromLastPtMeters > searchRadiusMeters) continue;
+                                          }
+                                        }
+
                                         if (path.length >= 2) {
                                           if (effectiveStitchDistMeters > 7000.0) {
                                             continue; // Окремий вектор >= 2 точок за межами 7 км не склеюємо!
@@ -3420,6 +3439,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                             existingType == 'kab';
                                         final bool isAnyMissile = isMissileThreat || existingIsMissile || activeBallisticOrMissileContext;
                                         final bool isJetThreat = (existingType == 'shahed_jet' || rawType == 'shahed_jet');
+                                        final DateTime? prevFixTime = existing['lastUpdated'] as DateTime?;
+                                        final bool wasLostTrack = isLostTrackableType(existingType) &&
+                                            existing['isExitingOblast'] != true &&
+                                            prevFixTime != null &&
+                                            msgTime.difference(prevFixTime).inSeconds > getThreatLifetimeSeconds(existing);
 
                                         if (isAnyMissile) {
                                           if (existing['type'] != 'missile_hypersonic' && existing['type'] != 'missile_cruise') {
@@ -3438,6 +3462,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         }
 
                                         applySmartWaypointAppend(existing, msgTime);
+                                        // Фіксацію втраченої цілі відновлено — повертаємо її на мапу
+                                        if (wasLostTrack) {
+                                          existing['lastUpdated'] = msgTime;
+                                        }
 
                                         if (isExitingOblast) {
                                           if (existing['route'] != null && !existing['route'].toString().contains('(Вихід з області)')) {
@@ -3693,7 +3721,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                 }
                             }
 
-                            // Залишаємо активні цілі за Smart TTL (балістика 120с, КР 180с, БпЛА 300с, вихід з області 45с) та щойно збиті цілі (35с для показу зеленої картки збиття)
+                            // Залишаємо активні цілі за Smart TTL (балістика 120с, КР 180с, шахед/реактивний шахед 300с або до кінця маршруту, інші БпЛА 1320с, вихід з області 45с) та щойно збиті цілі (35с для показу зеленої картки збиття)
+                            // Шахеди без фіксації довше часу життя прибираються з мапи та лічильника, а на місці втрати фіксації ставиться знак питання
+                            lostTracks = [];
                             threats = threats.where((t) {
                               if (t['isDestroyed'] == true) {
                                 final destroyedAt = (t['destroyedAt'] as DateTime?) ?? (t['lastUpdated'] as DateTime?) ?? now;
@@ -3701,8 +3731,23 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                               }
                               final lastUpd = t['lastUpdated'] as DateTime?;
                               if (lastUpd == null) return true;
-                              final int ttl = (t['ttl'] as int?) ?? getThreatTtlSeconds(t['type']?.toString() ?? '', isExitingOblast: t['isExitingOblast'] == true);
-                              return now.difference(lastUpd).inSeconds <= ttl;
+                              final int lifetime = getThreatLifetimeSeconds(t);
+                              final int elapsed = now.difference(lastUpd).inSeconds;
+                              if (elapsed <= lifetime) return true;
+
+                              final String typeStr = (t['type'] ?? '').toString();
+                              if (isLostTrackableType(typeStr) && t['isExitingOblast'] != true && elapsed - lifetime <= kLostTrackRetentionSec) {
+                                final lostPath = t['path'] as List<LatLng>?;
+                                if (lostPath != null && lostPath.isNotEmpty) {
+                                  lostTracks.add({
+                                    'point': lostPath.last,
+                                    'lostAt': lastUpd.add(Duration(seconds: lifetime)),
+                                    'type': typeStr,
+                                    'msgId': t['msgId'],
+                                  });
+                                }
+                              }
+                              return false;
                             }).toList();
 
                             // Якщо ціль щойно з'явилась (1 точка) і не кружляє на місці — будуємо вектор підльоту,
@@ -3867,6 +3912,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                           _cachedSouthThreatLabel = southThreatLabel;
                           _cachedThreats = threats.map((t) => Map<String, dynamic>.from(t)).toList();
                           _cachedHasMissiles = hasMissiles;
+                          _cachedLostTracks = lostTracks.map((l) => Map<String, dynamic>.from(l)).toList();
                         }
                           
                           final activeWatchedLocations = watchedLocations.where((l) => l.enabled).toList();
@@ -4167,6 +4213,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   RepaintBoundary(
                                     child: AnimatedThreatsLayer(
                                       threats: threats,
+                                      lostTracks: lostTracks,
                                       airDefenses: activeAirDefenses,
                                       selectedMsgId: _selectedThreatMsgId,
                                       onSelectThreat: (msgId) {
@@ -5587,6 +5634,7 @@ Widget _buildThreatAssetIcon(String type, {double? size}) {
 
 class AnimatedThreatsLayer extends StatefulWidget {
   final List<Map<String, dynamic>> threats;
+  final List<Map<String, dynamic>> lostTracks;
   final List<Map<String, dynamic>> airDefenses;
   final dynamic selectedMsgId;
   final ValueChanged<dynamic>? onSelectThreat;
@@ -5595,6 +5643,7 @@ class AnimatedThreatsLayer extends StatefulWidget {
   const AnimatedThreatsLayer({
     super.key,
     required this.threats,
+    this.lostTracks = const [],
     this.airDefenses = const [],
     this.selectedMsgId,
     this.onSelectThreat,
@@ -5617,7 +5666,7 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
       vsync: this,
       duration: const Duration(seconds: 10),
     );
-    if (widget.threats.isNotEmpty || widget.airDefenses.isNotEmpty) {
+    if (widget.threats.isNotEmpty || widget.airDefenses.isNotEmpty || widget.lostTracks.isNotEmpty) {
       _controller.repeat();
     }
   }
@@ -5626,7 +5675,7 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
   void didUpdateWidget(AnimatedThreatsLayer oldWidget) {
     super.didUpdateWidget(oldWidget);
     _cachedLayerWidget = null;
-    final hasItems = widget.threats.isNotEmpty || widget.airDefenses.isNotEmpty;
+    final hasItems = widget.threats.isNotEmpty || widget.airDefenses.isNotEmpty || widget.lostTracks.isNotEmpty;
     if (hasItems && !_controller.isAnimating) {
       _controller.repeat();
     } else if (!hasItems && _controller.isAnimating) {
@@ -5762,7 +5811,7 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
 
   @override
   Widget build(BuildContext context) {
-    if (widget.threats.isEmpty && widget.airDefenses.isEmpty) return const SizedBox.shrink();
+    if (widget.threats.isEmpty && widget.airDefenses.isEmpty && widget.lostTracks.isEmpty) return const SizedBox.shrink();
 
     return AnimatedBuilder(
       animation: _controller,
@@ -5839,7 +5888,7 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
           }
 
           final typeStr = (t['type'] ?? '').toString();
-          final int threatTtl = (t['ttl'] as int?) ?? getThreatTtlSeconds(typeStr, isExitingOblast: t['isExitingOblast'] == true);
+          final int threatTtl = getThreatLifetimeSeconds(t);
           if (elapsedSec > threatTtl) continue;
 
           final speedKmh = (t['speed'] as num?)?.toDouble() ?? 500.0;
@@ -6108,7 +6157,7 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
           bool isGhost = false;
           String? decayTimeTag;
 
-          final int ttlForDecay = (t['ttl'] as int?) ?? getThreatTtlSeconds(typeStr, isExitingOblast: t['isExitingOblast'] == true);
+          final int ttlForDecay = getThreatLifetimeSeconds(t);
           if (elapsedSec <= ttlForDecay * 0.4) {
             opacity = 1.0;
           } else if (elapsedSec <= ttlForDecay * 0.7) {
@@ -6844,6 +6893,30 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
                         ),
                       ),
                   ],
+                ),
+              ),
+            ),
+          );
+        }
+
+        // Знак питання на місці втрати фіксації шахеда (коло пошуку відновлення на мапі не малюється)
+        for (final lost in widget.lostTracks) {
+          final lostPt = lost['point'];
+          if (lostPt is! LatLng) continue;
+          markers.add(
+            Marker(
+              point: lostPt,
+              width: 22,
+              height: 22,
+              child: IgnorePointer(
+                child: Container(
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.8), width: 1.2),
+                  ),
+                  child: const Text('?', style: TextStyle(color: Colors.orangeAccent, fontSize: 12, fontWeight: FontWeight.bold, height: 1.0)),
                 ),
               ),
             ),
