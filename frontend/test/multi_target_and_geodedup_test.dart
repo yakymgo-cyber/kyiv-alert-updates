@@ -76,19 +76,20 @@ void main() {
 
   group('Problem 3: Smart Geo-Deduplication', () {
     test('Deduplicates messages from different channels at same coords within 120s and merges channel labels', () {
+      final baseTime = DateTime.now().toUtc().subtract(const Duration(minutes: 5));
       final rawMsgs = [
         {
           'id': 101,
           'channel': 'Kyiv AirDefense',
           'text': 'Троєщина',
-          'date': '2026-10-15T14:09:00Z',
+          'date': baseTime.toIso8601String(),
           'type': 'danger',
         },
         {
           'id': 202,
           'channel': 'SK_DM_SK',
           'text': 'Вилізло одне на Трою',
-          'date': '2026-10-15T14:09:30Z',
+          'date': baseTime.add(const Duration(seconds: 30)).toIso8601String(),
           'type': 'danger',
         },
       ];
@@ -100,19 +101,20 @@ void main() {
     });
 
     test('Does NOT deduplicate distant targets (> 6 km) even within same minute', () {
+      final baseTime = DateTime.now().toUtc().subtract(const Duration(minutes: 5));
       final rawMsgs = [
         {
           'id': 101,
           'channel': 'Kyiv AirDefense',
           'text': 'Троєщина',
-          'date': '2026-10-15T14:09:00Z',
+          'date': baseTime.toIso8601String(),
           'type': 'danger',
         },
         {
           'id': 303,
           'channel': 'war_monitor',
           'text': 'Тетіїв шахед',
-          'date': '2026-10-15T14:09:15Z',
+          'date': baseTime.add(const Duration(seconds: 15)).toIso8601String(),
           'type': 'danger',
         },
       ];
@@ -231,13 +233,14 @@ void main() {
     });
 
     test('Geo-deduplication merges channel with " • " and tracks merged_msg_ids and merged_post_ids', () {
+      final baseTime = DateTime.now().toUtc().subtract(const Duration(minutes: 5));
       final msgs = [
         {
           'id': 101,
           'postId': 'kyiv_channel/101',
           'channel': 'Kyiv AirDefense 🌇',
           'text': 'Троєщина',
-          'date': '2026-10-15T14:09:00Z',
+          'date': baseTime.toIso8601String(),
           'type': 'danger',
         },
         {
@@ -245,7 +248,7 @@ void main() {
           'postId': 'sk_channel/202',
           'channel': 'SK_DM_SK',
           'text': 'Вилізло одне на Трою',
-          'date': '2026-10-15T14:09:25Z',
+          'date': baseTime.add(const Duration(seconds: 25)).toIso8601String(),
           'type': 'danger',
         },
       ];

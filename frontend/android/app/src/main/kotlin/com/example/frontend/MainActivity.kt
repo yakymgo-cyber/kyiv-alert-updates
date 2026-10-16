@@ -149,11 +149,28 @@ class MainActivity : FlutterActivity() {
                             val file = File(filePath)
                             val canonicalFilePath = file.canonicalPath
                             val canonicalCacheDir = cacheDir.canonicalPath
-                            if (!canonicalFilePath.startsWith(canonicalCacheDir)) {
-                                result.error("SECURITY_VIOLATION", "Path traversal detected: file must be located in app cache dir", null)
+                            if (!canonicalFilePath.startsWith(canonicalCacheDir) || file.name != "update.apk") {
+                                result.error("SECURITY_VIOLATION", "Path traversal or invalid file name rejected", null)
                                 return@setMethodCallHandler
                             }
                             if (file.exists()) {
+                                val fileLen = file.length()
+                                if (fileLen < 1024L || fileLen > 157286400L) {
+                                    result.error("SECURITY_VIOLATION", "Invalid APK file size: $fileLen", null)
+                                    return@setMethodCallHandler
+                                }
+                                val magic = ByteArray(4)
+                                val readBytes = file.inputStream().use { it.read(magic) }
+                                val isZip = readBytes == 4 &&
+                                    magic[0] == 0x50.toByte() &&
+                                    magic[1] == 0x4B.toByte() &&
+                                    magic[2] == 0x03.toByte() &&
+                                    magic[3] == 0x04.toByte()
+                                if (!isZip) {
+                                    try { file.delete() } catch (_: Exception) {}
+                                    result.error("SECURITY_VIOLATION", "Invalid APK signature", null)
+                                    return@setMethodCallHandler
+                                }
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                                     if (!packageManager.canRequestPackageInstalls()) {
                                         try {

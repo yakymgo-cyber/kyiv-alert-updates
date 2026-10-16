@@ -1,4 +1,6 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:frontend/services/threat_parser.dart';
 import 'package:frontend/services/voice_alert_service.dart';
 import 'package:frontend/services/live_radar_notification_service.dart';
@@ -111,6 +113,40 @@ void main() {
 
       radarNotif.unmuteAlarm();
       VoiceAlertService.instance.unmute();
+    });
+  });
+
+  group('Tactical Feature 4: Upgraded Aerial Target Kinematics & Visualization', () {
+    test('De-synchronized circling orbits separate multiple targets at the same point', () {
+      const center = LatLng(50.4501, 30.5234);
+      final res1 = calculateCirclingPosAndAngle(
+        center,
+        10.0,
+        phaseOffset: 0.0,
+        radiusScale: 1.0,
+        clockwise: true,
+      );
+      final res2 = calculateCirclingPosAndAngle(
+        center,
+        10.0,
+        phaseOffset: 1.618,
+        radiusScale: 0.85,
+        clockwise: false,
+      );
+
+      final distMeters = const Distance().as(LengthUnit.Meter, res1.$1, res2.$1);
+      expect(distMeters, greaterThan(500.0));
+      expect(res1.$2, isNot(equals(res2.$2)));
+    });
+
+    test('Forecast cone builds smooth 12-segment arc and scales opacity with Confidence Decay', () {
+      const pos = LatLng(50.4501, 30.5234);
+      final coneFresh = buildForecastCone(pos, 0.0, 50.0, Colors.orangeAccent, true, opacity: 1.0);
+      final coneGhost = buildForecastCone(pos, 0.0, 50.0, Colors.orangeAccent, true, opacity: 0.4);
+
+      // 1 origin + 13 arc vertices + 1 closing origin = 15 points
+      expect(coneFresh.points.length, 15);
+      expect(coneGhost.color!.a, lessThan(coneFresh.color!.a));
     });
   });
 }

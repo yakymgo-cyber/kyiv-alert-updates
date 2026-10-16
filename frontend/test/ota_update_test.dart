@@ -125,6 +125,40 @@ void main() {
 
       expect(cfg.extraDangerKeywords.length, equals(1));
       expect(cfg.extraDangerKeywords.first, equals('небезпека'));
+
+      // Untrusted apk_url is rejected at parse time and HTML stripped from changelog
+      final evilUrlConfig = RemoteConfig.fromJson({
+        'version_code': 999,
+        'version_name': '<script>1.9.9</script>',
+        'apk_url': 'https://evil-attacker.com/malware.apk',
+        'changelog': '<b>Оновлення</b> <script>alert(1)</script>',
+      });
+      expect(evilUrlConfig.apkUrl, isEmpty);
+      expect(evilUrlConfig.versionName, equals('1.9.9'));
+      expect(evilUrlConfig.changelog, equals('Оновлення alert(1)'));
+    });
+
+    test('Storage path traversal protection and WatchedLocation bounds sanitization', () async {
+      expect(await getAppStorageFile('../secret.json'), isNull);
+      expect(await getAppStorageFile('..\\secret.json'), isNull);
+      expect(await getAppStorageFile('/etc/passwd'), isNull);
+      expect(await getAppStorageFile('C:\\Windows\\system.ini'), isNull);
+      expect(await getAppStorageFile('watched_locations.json'), isNotNull);
+
+      final loc = WatchedLocation.fromJson({
+        'id': '',
+        'name': '<b>Дім</b>',
+        'address': '<i>Київ</i>',
+        'lat': 999.0,
+        'lon': -999.0,
+        'radiusMeters': 9999999.0,
+      });
+      expect(loc.id, equals('zone_default'));
+      expect(loc.name, equals('Дім'));
+      expect(loc.address, equals('Київ'));
+      expect(loc.point.latitude, equals(90.0));
+      expect(loc.point.longitude, equals(-180.0));
+      expect(loc.radiusMeters, equals(50000.0));
     });
 
     test('ZIP Magic Header verification detects valid APK and rejects fake files', () {

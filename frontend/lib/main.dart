@@ -62,8 +62,8 @@ Color _getAlertFillColor(int threatLevel) => getAlertFillColor(threatLevel);
 Color _getAlertBorderColor(int threatLevel, {bool defaultFaint = true}) => getAlertBorderColor(threatLevel, defaultFaint: defaultFaint);
 double _minDistanceToPointMeters(LatLng center, List<LatLng> path) => minDistanceToPointMeters(center, path);
 double _calculateBearing(LatLng from, LatLng to) => calculateBearing(from, to);
-Polygon _buildForecastCone(LatLng currentPos, double bearing, double speedMs, Color color, bool isUav) => buildForecastCone(currentPos, bearing, speedMs, color, isUav);
-(LatLng, double) _calculateCirclingPosAndAngle(LatLng center, double timeSec) => calculateCirclingPosAndAngle(center, timeSec);
+Polygon _buildForecastCone(LatLng currentPos, double bearing, double speedMs, Color color, bool isUav, {double opacity = 1.0}) => buildForecastCone(currentPos, bearing, speedMs, color, isUav, opacity: opacity);
+(LatLng, double) _calculateCirclingPosAndAngle(LatLng center, double timeSec, {double phaseOffset = 0.0, double radiusScale = 1.0, bool clockwise = true}) => calculateCirclingPosAndAngle(center, timeSec, phaseOffset: phaseOffset, radiusScale: radiusScale, clockwise: clockwise);
 (LatLng, double) _interpolatePosAndAngle(List<LatLng> path, double fraction) => interpolatePosAndAngle(path, fraction);
 String _formatEta(double distanceMeters, double speedMs) => formatEta(distanceMeters, speedMs);
 double _projectedForwardDistance(LatLng locPoint, LatLng pPrev, LatLng pLast, double maxDistanceMeters) => projectedForwardDistance(locPoint, pPrev, pLast, maxDistanceMeters);
@@ -138,42 +138,62 @@ final geoJsonProvider = FutureProvider<Map<String, dynamic>>((ref) async {
 
 class AlertsNotifier extends Notifier<Map<String, bool>> {
   Timer? _timer;
+  final http.Client _httpClient = http.Client();
+  bool _disposed = false;
+  bool _isFetching = false;
 
   @override
   Map<String, bool> build() {
+    _disposed = false;
     ref.onDispose(() {
+      _disposed = true;
       _timer?.cancel();
+      _httpClient.close();
     });
-    
+
     _scheduleNextFetch(0);
     return {};
   }
 
   void _scheduleNextFetch(int seconds) {
+    if (_disposed) return;
     _timer?.cancel();
     _timer = Timer(Duration(seconds: seconds), _fetchData);
   }
 
+  Future<void> refreshNow() => _fetchData();
+
   Future<void> _fetchData() async {
+    if (_disposed || _isFetching) return;
+    _isFetching = true;
     try {
-      final response = await http.get(Uri.parse('https://ubilling.net.ua/aerialalerts/'));
-      if (response.statusCode == 200) {
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final response = await _httpClient.get(
+        Uri.parse('https://ubilling.net.ua/aerialalerts/?_t=$ts'),
+        headers: const {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+        },
+      ).timeout(const Duration(seconds: 5));
+      if (_disposed) return;
+      if (response.statusCode == 200 && response.bodyBytes.length <= 262144) {
         final data = json.decode(utf8.decode(response.bodyBytes));
         Map<String, bool> alerts = {};
         final states = data['states'] as Map<String, dynamic>;
         states.forEach((key, value) {
           alerts[key] = value['alertnow'] == true;
         });
-        
-        state = alerts;
 
-        bool hasActiveAlert = alerts['м. Київ'] == true || alerts['Київська область'] == true;
-        _scheduleNextFetch(hasActiveAlert ? 15 : 10);
+        state = alerts;
+        _scheduleNextFetch(6);
         return;
       }
-    } catch (_) {}
-    
-    _scheduleNextFetch(10);
+    } catch (_) {
+    } finally {
+      _isFetching = false;
+    }
+
+    _scheduleNextFetch(6);
   }
 }
 
@@ -342,7 +362,7 @@ class RemoteConfigNotifier extends Notifier<RemoteConfig> {
             'Expires': '0',
           },
         ).timeout(const Duration(seconds: 12));
-        if (response.statusCode == 200) {
+        if (response.statusCode == 200 && response.bodyBytes.length <= 262144) {
           final jsonMap = json.decode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
           final cfg = RemoteConfig.fromJson(jsonMap);
           state = cfg;
@@ -370,16 +390,27 @@ final remoteConfigProvider = NotifierProvider<RemoteConfigNotifier, RemoteConfig
 
 class MessagesNotifier extends Notifier<List<dynamic>> {
   Timer? _timer;
+  final http.Client _httpClient = http.Client();
+  final Map<String, int> _lastChannelPostId = {};
+  final Map<String, List<Map<String, dynamic>>> _channelMessagesCache = {};
+  int _pollCycleCount = 0;
   bool _isFirstLoad = true;
+  bool _disposed = false;
+  bool _isFetching = false;
   int _backendSkipCycles = 0;
 
   @override
   List<dynamic> build() {
+    _disposed = false;
     onNewLocationLearned = () {
-      state = [...state];
+      if (!_disposed) {
+        state = [...state];
+      }
     };
     ref.onDispose(() {
+      _disposed = true;
       _timer?.cancel();
+      _httpClient.close();
       onNewLocationLearned = null;
     });
 
@@ -395,11 +426,327 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
   String categorizeLocalMessage(String text) => ThreatParser.categorizeLocalMessage(text);
   List<dynamic> deduplicateMessages(List<dynamic> rawMsgs) => ThreatParser.deduplicateMessages(rawMsgs);
 
+  Future<void> refreshNow() => _fetchData();
+
   String _decodeLocalToken() {
     const encoded = [49, 3, 51, 12, 5, 59, 22, 63, 8, 46, 5, 9, 63, 25, 40, 31, 46, 5, 99, 99, 104, 107];
     return String.fromCharCodes(encoded.map((b) => b ^ 0x5A));
   }
+
+  List<Map<String, dynamic>> _parseChannelHtml(String html, (String, String, bool) ch) {
+    final blocks = html.split('tgme_widget_message_wrap');
+    final List<Map<String, dynamic>> chMsgs = [];
+    if (blocks.length <= 1) return chMsgs;
+
+    int maxSeenId = _lastChannelPostId[ch.$1] ?? 0;
+    final startIdx = blocks.length > 18 ? blocks.length - 18 : 1;
+
+    for (int i = startIdx; i < blocks.length; i++) {
+      final b = blocks[i];
+      final timeMatch = RegExp(r'<time datetime="([^"]+)"').firstMatch(b);
+      final postMatch = RegExp(r'data-post="([^"]+)"').firstMatch(b);
+      final String? postId = postMatch?.group(1);
+      final idMatch = RegExp(r'data-post="[^/]+/(\d+)"').firstMatch(b);
+      final int msgId = int.tryParse(postId?.split('/').last ?? '') ?? (int.tryParse(idMatch?.group(1) ?? '0') ?? i);
+
+      // Фіксуємо максимальний ID поста на каналі ДО будь-яких фільтрів Києва,
+      // щоб інкрементальний XHR (?after=) завжди запитував лише найновіші пости!
+      if (msgId > maxSeenId && msgId > 10) {
+        maxSeenId = msgId;
+      }
+
+      final replyHrefMatch = RegExp(r'tgme_widget_message_reply[^>]*href="(?:https?://t\.me/|/)?([^"]+)"').firstMatch(b);
+      final String? replyToPostId = replyHrefMatch?.group(1);
+      final int? replyToId = replyToPostId != null ? int.tryParse(replyToPostId.split('/').last) : null;
+
+      String? replyQuotedText;
+      final replyBlockMatch = RegExp(r'<a[^>]*class="[^"]*tgme_widget_message_reply[^"]*"[\s\S]*?</a>').firstMatch(b);
+      if (replyBlockMatch != null) {
+        final replyBlock = replyBlockMatch.group(0)!;
+        final rTextMatch = RegExp(r'tgme_widget_message_reply_text[^>]*>([\s\S]*?)</div>').firstMatch(replyBlock);
+        if (rTextMatch != null) {
+          replyQuotedText = _cleanHtmlText(rTextMatch.group(1)!).replaceAll('\n', ' ').trim();
+        } else {
+          final clean = _cleanHtmlText(replyBlock).replaceAll('\n', ' ').trim();
+          if (clean.isNotEmpty) replyQuotedText = clean;
+        }
+      }
+
+      // Вирізаємо блок цитати reply перед парсингом основного тексту!
+      final bWithoutReply = b.replaceAll(RegExp(r'<a[^>]*class="[^"]*tgme_widget_message_reply[^"]*"[\s\S]*?</a>'), '');
+
+      final mainTextMatches = RegExp(r'tgme_widget_message_text(?![^>]*reply)[^>]*>([\s\S]*?)</div>').allMatches(bWithoutReply);
+      final textMatch = mainTextMatches.isNotEmpty
+          ? mainTextMatches.last
+          : RegExp(r'tgme_widget_message_text[^>]*>([\s\S]*?)</div>').allMatches(bWithoutReply).lastOrNull;
+
+      if (textMatch == null || timeMatch == null) continue;
+
+      DateTime? msgTime;
+      try {
+        msgTime = DateTime.parse(timeMatch.group(1)!).toUtc();
+      } catch (_) {}
+      if (msgTime != null && DateTime.now().toUtc().difference(msgTime).inHours >= 12) {
+        continue;
+      }
+
+      String cleanText = _cleanHtmlText(textMatch.group(1)!);
+      if (cleanText.isEmpty) continue;
+
+      final tLower = cleanText.toLowerCase();
+
+      // Спеціальний фільтр для каналу air_alert_ua
+      if (ch.$1 == 'air_alert_ua') {
+        const allowedAirAlertKeywords = [
+          'київ', 'бровар', 'борисп', 'бучан', 'фастів', 'обухів', 'вишгород', 'білоцерків'
+        ];
+        if (!allowedAirAlertKeywords.any((kw) => tLower.contains(kw))) {
+          continue;
+        }
+      }
+
+      // Блокування повітряних тривог інших областей (air_alert_ua хештеги)
+      const externalDistrictHashtags = [
+        '#харківський_район', '#дніпровський_район', '#камянський_район', '#кам\'янський_район',
+        '#криворізький_район', '#синельниківський_район', '#павлоградський_район', '#новомосковський_район',
+        '#чугуївський_район', '#ізюмський_район', '#богодухівський_район', '#лозівський_район',
+        '#красноградський_район', '#сумський_район', '#охтирський_район', '#конотопський_район',
+        '#шосткинський_район',
+      ];
+      final bool hasExtHashtag = externalDistrictHashtags.any((tag) => tLower.contains(tag));
+      final bool hasExtPhrase = (tLower.contains('в харківський район') ||
+          tLower.contains('у харківський район') ||
+          tLower.contains('в дніпровський район') ||
+          tLower.contains('у дніпровський район')) && !(tLower.contains('київ') || tLower.contains('києв'));
+
+      if (hasExtHashtag || hasExtPhrase) {
+        continue;
+      }
+
+      final msgType = _categorizeLocalMessage(cleanText);
+      if (msgType == 'ignore') continue;
+
+      // 1. Специфічні стоп-слова всеукраїнських зведень та інших регіонів
+      const globalDigestStopWords = [
+        'кроп', 'кропивницьк', 'знам\'ян', 'знамян', 'олександрі', 'павлиш',
+        'горішні плавні', 'омельник', 'лихівка', 'жовті води', 'карлівка',
+        'берестин', 'чутове', 'магдалинівк', 'кобеля', 'перещепин', 'долинськ',
+        'устинівк', 'широке', 'кривий ріг', 'херсонщин', 'миколаївщин', 'запоріжж',
+        'дніпропетров', 'харківщин', 'сумщин', 'донеччин', 'луганщин', 'одещин'
+      ];
+      final bool hasGlobalStopWord = globalDigestStopWords.any((sw) {
+        if (sw == 'олександрі') {
+          return tLower.contains('олександрі') && !tLower.contains('олександрів');
+        }
+        return tLower.contains(sw);
+      });
+      if (hasGlobalStopWord) {
+        continue;
+      }
+
+      // 2. Фільтр на всеукраїнські та міжрегіональні дайджести
+      final Set<String> externalMatches = {};
+      for (final r in _kFarRegions) {
+        if (tLower.contains(r)) externalMatches.add(r);
+      }
+      for (final b in _kExternalBorderKeys) {
+        if (tLower.contains(b)) externalMatches.add(b);
+      }
+
+      final bool hasTrajectory = tLower.contains('->') || tLower.contains('—>') || tLower.contains('-->');
+      if ((externalMatches.length >= 3 && !hasTrajectory) || externalMatches.length >= 4) {
+        continue;
+      }
+
+      final lowerCheck = cleanText.toLowerCase();
+
+      // Фільтрація суто іногородніх постів для ВСІХ каналів (включно з kyiv_airdef)
+      const kyivStrictAnchors = [
+        'київ', 'київщин', 'область', 'бровар', 'борисп', 'обухів',
+        'васильків', 'біла церкв', 'фастів', 'вишгород', 'буч', 'ірпін',
+        'іванків', 'славутич', 'згурівк', 'яготин', 'переяслав', 'березан',
+        'баришівк', 'кагарлик', 'миронівк', 'богуслав', 'рокитн', 'сквир',
+        'тетіїв', 'чзв', 'зону', 'столиц',
+      ];
+      final bool hasKyivStrictAnchor = kyivStrictAnchors.any((a) => lowerCheck.contains(a)) ||
+          _kKyivLocations.keys.any((k) => !_kExternalBorderKeys.contains(k) && lowerCheck.contains(k));
+
+      final bool isDniproWaterway = lowerCheck.contains('по дніпру') ||
+          lowerCheck.contains('вздовж дніпра') ||
+          lowerCheck.contains('руслом дніпра') ||
+          lowerCheck.contains('через дніпро');
+
+      const farTransitPhrases = [
+        'в полтавську', 'на полтавський', 'в полтав', 'на полтав', 'полтавськ',
+        'у вінницьку', 'на вінницьку', 'у вінниц', 'на вінниц', 'вінницьк',
+        'на луцьк', 'луцьк', 'на хмель', 'хмельницьк', 'хмельниц',
+        'на кременчук', 'кременчук', 'одещин', 'в одес', 'на одес', 'одес',
+        'запоріж', 'харків', 'львів', 'рівнен', 'терноп',
+        'франківськ', 'волин', 'миколаїв', 'херсон', 'сумськ', 'кропивницьк',
+        'чернівц', 'закарпат',
+        'в дніпро', 'на дніпро', 'у дніпро', 'до дніпра', 'дніпропетровськ',
+      ];
+      final bool hasFarTransit = !isDniproWaterway && (farTransitPhrases.any((p) => lowerCheck.contains(p)) ||
+          _kFarRegions.any((r) => lowerCheck.contains(r)));
+
+      if (hasFarTransit && !hasKyivStrictAnchor) {
+        continue;
+      }
+
+      if (ch.$3) {
+        if (!hasKyivStrictAnchor) {
+          continue;
+        }
+      }
+
+      final threats = (msgType == 'news') ? <Map<String, dynamic>>[] : parseLocalThreats(cleanText);
+      if (threats.isEmpty) {
+        final bool hasExternalOrFar = _kFarRegions.any((r) => lowerCheck.contains(r)) ||
+            _kExternalBorderKeys.any((b) => lowerCheck.contains(b));
+        final bool hasKyivAnchor = lowerCheck.contains('київ') ||
+            lowerCheck.contains('столиц') ||
+            lowerCheck.contains('київщин') ||
+            lowerCheck.contains('в зону');
+        if (hasExternalOrFar && !hasKyivAnchor) {
+          continue;
+        }
+      }
+      final effectiveType = threats.isNotEmpty ? 'danger' : msgType;
+      chMsgs.add({
+        'id': msgId,
+        'postId': postId,
+        'reply_to_post_id': replyToPostId,
+        'reply_quoted_text': replyQuotedText,
+        'text': cleanText,
+        'date': timeMatch.group(1)!,
+        'type': effectiveType,
+        'channel': ch.$2,
+        'reply_to_msg_id': replyToId,
+        'threats': threats,
+      });
+    }
+
+    if (maxSeenId > 0) {
+      _lastChannelPostId[ch.$1] = maxSeenId;
+    }
+    return chMsgs;
+  }
+
+  bool _mergeChannelMessages(String chKey, List<Map<String, dynamic>> incoming) {
+    if (incoming.isEmpty) return false;
+    final existing = _channelMessagesCache[chKey] ?? <Map<String, dynamic>>[];
+    final Map<int, Map<String, dynamic>> byId = {
+      for (final m in existing) (m['id'] as int? ?? 0): m,
+    };
+
+    bool hasChanges = false;
+    for (final msg in incoming) {
+      final int id = msg['id'] as int? ?? 0;
+      final prev = byId[id];
+      if (prev == null || prev['text'] != msg['text']) {
+        hasChanges = true;
+      }
+      byId[id] = msg;
+    }
+
+    final nowUtc = DateTime.now().toUtc();
+    final merged = byId.values.where((m) {
+      final dt = DateTime.tryParse(m['date']?.toString() ?? '')?.toUtc();
+      return dt == null || nowUtc.difference(dt).inHours < 12;
+    }).toList();
+
+    merged.sort((a, b) => b['date'].toString().compareTo(a['date'].toString()));
+    _channelMessagesCache[chKey] = merged.take(35).toList();
+    return hasChanges;
+  }
+
+  List<Map<String, dynamic>> _buildCombinedDeduplicatedList() {
+    final List<Map<String, dynamic>> allMsgs = [];
+    for (final list in _channelMessagesCache.values) {
+      for (final m in list) {
+        // Копіюємо Map, щоб гео-дедуплікація не мутувала об'єкти у по-канальному кеші
+        allMsgs.add(Map<String, dynamic>.from(m));
+      }
+    }
+    allMsgs.sort((a, b) => b['date'].toString().compareTo(a['date'].toString()));
+    return deduplicateMessages(allMsgs).cast<Map<String, dynamic>>().take(100).toList();
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchSingleChannel((String, String, bool) ch) async {
+    final String chKey = ch.$1;
+    final int? knownLastId = _lastChannelPostId[chKey];
+    final bool hasCache = (_channelMessagesCache[chKey]?.isNotEmpty ?? false);
+    final bool useIncrementalXhr = knownLastId != null &&
+        knownLastId > 2 &&
+        hasCache &&
+        (_pollCycleCount % 6 != 0);
+
+    // 1. Надшвидке інкрементальне XHR-опитування POST ?after=<lastId - 2> (обходить CDN-кеш і важить ~6 КБ замість 100 КБ)
+    if (useIncrementalXhr) {
+      try {
+        final uri = Uri.parse('https://t.me/s/$chKey?after=${knownLastId - 2}');
+        final resp = await _httpClient.post(
+          uri,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'Origin': 'https://t.me',
+            'Referer': 'https://t.me/s/$chKey',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+          },
+        ).timeout(const Duration(seconds: 4));
+
+        if (resp.statusCode == 200 && resp.bodyBytes.length <= 524288) {
+          final rawStr = utf8.decode(resp.bodyBytes, allowMalformed: true).trim();
+          if (rawStr.isEmpty || rawStr == '""') {
+            return const <Map<String, dynamic>>[];
+          }
+          String html = rawStr;
+          if (rawStr.startsWith('"')) {
+            try {
+              final decoded = json.decode(rawStr);
+              if (decoded is String) {
+                html = decoded;
+              }
+            } catch (_) {}
+          }
+          return _parseChannelHtml(html, ch);
+        }
+      } catch (_) {
+        // При помилці XHR плавно переходимо до GET ?before=
+      }
+    }
+
+    // 2. Повна синхронізація з параметром ?before= (нативний параметр Telegram, який гарантовано обходить кеш статики /s/)
+    try {
+      final int dynamicBefore = (knownLastId != null && knownLastId > 0)
+          ? (knownLastId + 50 + (_pollCycleCount % 29))
+          : (90000000 + (DateTime.now().millisecondsSinceEpoch ~/ 1000) % 9000000);
+      final uri = Uri.parse('https://t.me/s/$chKey?before=$dynamicBefore');
+      final resp = await _httpClient.get(
+        uri,
+        headers: const {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0',
+        },
+      ).timeout(const Duration(seconds: 6));
+
+      if (resp.statusCode != 200 || resp.bodyBytes.length > 524288) {
+        return const <Map<String, dynamic>>[];
+      }
+      final html = utf8.decode(resp.bodyBytes, allowMalformed: true);
+      return _parseChannelHtml(html, ch);
+    } catch (_) {
+      return const <Map<String, dynamic>>[];
+    }
+  }
+
   Future<List<Map<String, dynamic>>> _fetchDirectTelegramChannels() async {
+    _pollCycleCount++;
     final baseChannels = [
       ('kyiv_airdef', 'Kyiv AirDefense 🌇', false),
       ('war_monitor', 'monitor', true),
@@ -409,275 +756,83 @@ class MessagesNotifier extends Notifier<List<dynamic>> {
     final extraChs = _dynamicExtraChannels.map((c) => (c, c, true)).toList();
     final channels = [...baseChannels, ...extraChs];
 
-    final List<Map<String, dynamic>> allMsgs = [];
     final futures = channels.map((ch) async {
-      try {
-        final uri = Uri.parse('https://t.me/s/${ch.$1}?_t=${DateTime.now().millisecondsSinceEpoch}');
-        final resp = await http.get(
-          uri,
-          headers: const {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0',
-          },
-        ).timeout(const Duration(seconds: 7));
-        // Захист від переповнення пам'яті (макс. 512 КБ)
-        if (resp.statusCode != 200 || resp.bodyBytes.length > 524288) {
-          return <Map<String, dynamic>>[];
+      final chMsgs = await _fetchSingleChannel(ch);
+      if (chMsgs.isNotEmpty) {
+        final bool changed = _mergeChannelMessages(ch.$1, chMsgs);
+        // Прогресивне (streaming) оновлення UI: щойно швидкий канал приніс нове повідомлення —
+        // одразу оновлюємо радар, не чекаючи завершення повільніших каналів!
+        if (changed && !_disposed && !_isFirstLoad) {
+          final progressiveList = _buildCombinedDeduplicatedList();
+          if (progressiveList.isNotEmpty) {
+            state = progressiveList;
+          }
         }
-
-        final html = utf8.decode(resp.bodyBytes, allowMalformed: true);
-        final blocks = html.split('tgme_widget_message_wrap');
-        final List<Map<String, dynamic>> chMsgs = [];
-
-        final startIdx = blocks.length > 18 ? blocks.length - 18 : 1;
-        for (int i = startIdx; i < blocks.length; i++) {
-          final b = blocks[i];
-          final timeMatch = RegExp(r'<time datetime="([^"]+)"').firstMatch(b);
-          final postMatch = RegExp(r'data-post="([^"]+)"').firstMatch(b);
-          final String? postId = postMatch?.group(1);
-          final idMatch = RegExp(r'data-post="[^/]+/(\d+)"').firstMatch(b);
-          final int msgId = int.tryParse(postId?.split('/').last ?? '') ?? (int.tryParse(idMatch?.group(1) ?? '0') ?? i);
-
-          final replyHrefMatch = RegExp(r'tgme_widget_message_reply[^>]*href="(?:https?://t\.me/|/)?([^"]+)"').firstMatch(b);
-          final String? replyToPostId = replyHrefMatch?.group(1);
-          final int? replyToId = replyToPostId != null ? int.tryParse(replyToPostId.split('/').last) : null;
-
-          String? replyQuotedText;
-          final replyBlockMatch = RegExp(r'<a[^>]*class="[^"]*tgme_widget_message_reply[^"]*"[\s\S]*?</a>').firstMatch(b);
-          if (replyBlockMatch != null) {
-            final replyBlock = replyBlockMatch.group(0)!;
-            final rTextMatch = RegExp(r'tgme_widget_message_reply_text[^>]*>([\s\S]*?)</div>').firstMatch(replyBlock);
-            if (rTextMatch != null) {
-              replyQuotedText = _cleanHtmlText(rTextMatch.group(1)!).replaceAll('\n', ' ').trim();
-            } else {
-              final clean = _cleanHtmlText(replyBlock).replaceAll('\n', ' ').trim();
-              if (clean.isNotEmpty) replyQuotedText = clean;
-            }
-          }
-
-          // Вирізаємо блок цитати reply перед парсингом основного тексту!
-          final bWithoutReply = b.replaceAll(RegExp(r'<a[^>]*class="[^"]*tgme_widget_message_reply[^"]*"[\s\S]*?</a>'), '');
-
-          final mainTextMatches = RegExp(r'tgme_widget_message_text(?![^>]*reply)[^>]*>([\s\S]*?)</div>').allMatches(bWithoutReply);
-          final textMatch = mainTextMatches.isNotEmpty
-              ? mainTextMatches.last
-              : RegExp(r'tgme_widget_message_text[^>]*>([\s\S]*?)</div>').allMatches(bWithoutReply).lastOrNull;
-
-          if (textMatch == null || timeMatch == null) continue;
-
-          DateTime? msgTime;
-          try {
-            msgTime = DateTime.parse(timeMatch.group(1)!).toUtc();
-          } catch (_) {}
-          if (msgTime != null && DateTime.now().toUtc().difference(msgTime).inHours >= 12) {
-            continue;
-          }
-
-          String cleanText = _cleanHtmlText(textMatch.group(1)!);
-          if (cleanText.isEmpty) continue;
-
-          final tLower = cleanText.toLowerCase();
-
-          // Спеціальний фільтр для каналу air_alert_ua
-          if (ch.$1 == 'air_alert_ua') {
-            const allowedAirAlertKeywords = [
-              'київ', 'бровар', 'борисп', 'бучан', 'фастів', 'обухів', 'вишгород', 'білоцерків'
-            ];
-            if (!allowedAirAlertKeywords.any((kw) => tLower.contains(kw))) {
-              continue;
-            }
-          }
-
-          // Блокування повітряних тривог інших областей (air_alert_ua хештеги)
-          const externalDistrictHashtags = [
-            '#харківський_район', '#дніпровський_район', '#камянський_район', '#кам\'янський_район',
-            '#криворізький_район', '#синельниківський_район', '#павлоградський_район', '#новомосковський_район',
-            '#чугуївський_район', '#ізюмський_район', '#богодухівський_район', '#лозівський_район',
-            '#красноградський_район', '#сумський_район', '#охтирський_район', '#конотопський_район',
-            '#шосткинський_район',
-          ];
-          final bool hasExtHashtag = externalDistrictHashtags.any((tag) => tLower.contains(tag));
-          final bool hasExtPhrase = (tLower.contains('в харківський район') ||
-              tLower.contains('у харківський район') ||
-              tLower.contains('в дніпровський район') ||
-              tLower.contains('у дніпровський район')) && !(tLower.contains('київ') || tLower.contains('києв'));
-
-          if (hasExtHashtag || hasExtPhrase) {
-            continue;
-          }
-
-          final msgType = _categorizeLocalMessage(cleanText);
-          if (msgType == 'ignore') continue;
-
-          // 1. Специфічні стоп-слова всеукраїнських зведень та інших регіонів
-          const globalDigestStopWords = [
-            'кроп', 'кропивницьк', 'знам\'ян', 'знамян', 'олександрі', 'павлиш', 
-            'горішні плавні', 'омельник', 'лихівка', 'жовті води', 'карлівка', 
-            'берестин', 'чутове', 'магдалинівк', 'кобеля', 'перещепин', 'долинськ',
-            'устинівк', 'широке', 'кривий ріг', 'херсонщин', 'миколаївщин', 'запоріжж',
-            'дніпропетров', 'харківщин', 'сумщин', 'донеччин', 'луганщин', 'одещин'
-          ];
-          final bool hasGlobalStopWord = globalDigestStopWords.any((sw) {
-            if (sw == 'олександрі') {
-              return tLower.contains('олександрі') && !tLower.contains('олександрів');
-            }
-            return tLower.contains(sw);
-          });
-          if (hasGlobalStopWord) {
-            // Якщо це глобальне зведення іншого регіону — одразу ігноруємо
-            continue;
-          }
-
-          // 2. Фільтр на всеукраїнські та міжрегіональні дайджести
-          // Якщо всі локації належать Київщині / Києву — НІКОЛИ не блокуємо
-          final Set<String> externalMatches = {};
-          for (final r in _kFarRegions) {
-            if (tLower.contains(r)) externalMatches.add(r);
-          }
-          for (final b in _kExternalBorderKeys) {
-            if (tLower.contains(b)) externalMatches.add(b);
-          }
-
-          final bool hasTrajectory = tLower.contains('->') || tLower.contains('—>') || tLower.contains('-->');
-          if ((externalMatches.length >= 3 && !hasTrajectory) || externalMatches.length >= 4) {
-            // Це зведення-простиня з багатьма зовнішніми регіонами — відсіюємо
-            continue;
-          }
-
-          final lowerCheck = cleanText.toLowerCase();
-
-          // Фільтрація суто іногородніх постів для ВСІХ каналів (включно з kyiv_airdef)
-          const kyivStrictAnchors = [
-            'київ', 'київщин', 'область', 'бровар', 'борисп', 'обухів',
-            'васильків', 'біла церкв', 'фастів', 'вишгород', 'буч', 'ірпін',
-            'іванків', 'славутич', 'згурівк', 'яготин', 'переяслав', 'березан',
-            'баришівк', 'кагарлик', 'миронівк', 'богуслав', 'рокитн', 'сквир',
-            'тетіїв', 'чзв', 'зону', 'столиц',
-          ];
-          final bool hasKyivStrictAnchor = kyivStrictAnchors.any((a) => lowerCheck.contains(a)) ||
-              _kKyivLocations.keys.any((k) => !_kExternalBorderKeys.contains(k) && lowerCheck.contains(k));
-
-          final bool isDniproWaterway = lowerCheck.contains('по дніпру') ||
-              lowerCheck.contains('вздовж дніпра') ||
-              lowerCheck.contains('руслом дніпра') ||
-              lowerCheck.contains('через дніпро');
-
-          const farTransitPhrases = [
-            'в полтавську', 'на полтавський', 'в полтав', 'на полтав', 'полтавськ',
-            'у вінницьку', 'на вінницьку', 'у вінниц', 'на вінниц', 'вінницьк',
-            'на луцьк', 'луцьк', 'на хмель', 'хмельницьк', 'хмельниц',
-            'на кременчук', 'кременчук', 'одещин', 'в одес', 'на одес', 'одес',
-            'запоріж', 'харків', 'львів', 'рівнен', 'терноп',
-            'франківськ', 'волин', 'миколаїв', 'херсон', 'сумськ', 'кропивницьк',
-            'чернівц', 'закарпат',
-            'в дніпро', 'на дніпро', 'у дніпро', 'до дніпра', 'дніпропетровськ',
-          ];
-          final bool hasFarTransit = !isDniproWaterway && (farTransitPhrases.any((p) => lowerCheck.contains(p)) ||
-              _kFarRegions.any((r) => lowerCheck.contains(r)));
-
-          if (hasFarTransit && !hasKyivStrictAnchor) {
-            continue;
-          }
-
-          if (ch.$3) {
-            if (!hasKyivStrictAnchor) {
-              continue;
-            }
-          }
-
-          final threats = (msgType == 'news') ? <Map<String, dynamic>>[] : parseLocalThreats(cleanText);
-          if (threats.isEmpty) {
-            final lowerCheck = cleanText.toLowerCase();
-            final bool hasExternalOrFar = _kFarRegions.any((r) => lowerCheck.contains(r)) ||
-                _kExternalBorderKeys.any((b) => lowerCheck.contains(b));
-            final bool hasKyivAnchor = lowerCheck.contains('київ') ||
-                lowerCheck.contains('столиц') ||
-                lowerCheck.contains('київщин') ||
-                lowerCheck.contains('в зону');
-            if (hasExternalOrFar && !hasKyivAnchor) {
-              continue;
-            }
-          }
-          final effectiveType = threats.isNotEmpty ? 'danger' : msgType;
-          chMsgs.add({
-            'id': msgId,
-            'postId': postId,
-            'reply_to_post_id': replyToPostId,
-            'reply_quoted_text': replyQuotedText,
-            'text': cleanText,
-            'date': timeMatch.group(1)!,
-            'type': effectiveType,
-            'channel': ch.$2,
-            'reply_to_msg_id': replyToId,
-            'threats': threats,
-          });
-        }
-        return chMsgs;
-      } catch (_) {
-        return <Map<String, dynamic>>[];
       }
+      return chMsgs;
     });
 
-    final results = await Future.wait(futures);
-    for (final list in results) {
-      allMsgs.addAll(list);
-    }
-
-    allMsgs.sort((a, b) => b['date'].toString().compareTo(a['date'].toString()));
-    return deduplicateMessages(allMsgs).cast<Map<String, dynamic>>().take(100).toList();
+    await Future.wait(futures);
+    return _buildCombinedDeduplicatedList();
   }
 
   Future<void> _fetchData() async {
-    bool fetchedFromBackend = false;
-    
-    // 1. Локальний loopback тільки для емулятора Android на ПК (10.0.2.2) виключно у Debug-режимі
-    if (kDebugMode) {
-      if (_backendSkipCycles > 0) {
-        _backendSkipCycles--;
-      } else {
-        try {
-          final response = await http.get(
-            Uri.parse('http://10.0.2.2:8000/api/messages'),
-            headers: {'X-API-Key': _decodeLocalToken()},
-          ).timeout(const Duration(milliseconds: 400));
-          if (response.statusCode == 200 && response.bodyBytes.length <= 262144) {
-            final data = json.decode(utf8.decode(response.bodyBytes));
-            final List<dynamic> msgs = data['messages'] ?? [];
-            if (msgs.isNotEmpty) {
-              state = deduplicateMessages(msgs);
-              fetchedFromBackend = true;
-              _backendSkipCycles = 0;
+    if (_disposed || _isFetching) return;
+    _isFetching = true;
+    try {
+      bool fetchedFromBackend = false;
+
+      // 1. Локальний loopback тільки для емулятора Android на ПК (10.0.2.2) виключно у Debug-режимі
+      if (kDebugMode) {
+        if (_backendSkipCycles > 0) {
+          _backendSkipCycles--;
+        } else {
+          try {
+            final response = await _httpClient.get(
+              Uri.parse('http://10.0.2.2:8000/api/messages'),
+              headers: {'X-API-Key': _decodeLocalToken()},
+            ).timeout(const Duration(milliseconds: 350));
+            if (response.statusCode == 200 && response.bodyBytes.length <= 262144) {
+              final data = json.decode(utf8.decode(response.bodyBytes));
+              final List<dynamic> msgs = data['messages'] ?? [];
+              if (msgs.isNotEmpty && !_disposed) {
+                state = deduplicateMessages(msgs);
+                fetchedFromBackend = true;
+                _backendSkipCycles = 0;
+              }
+            } else {
+              _backendSkipCycles = 200;
             }
-          } else {
+          } catch (_) {
             _backendSkipCycles = 200;
           }
-        } catch (_) {
-          _backendSkipCycles = 200;
         }
       }
+
+      // 2. Автономний HTTPS-режим із підтримкою Keep-Alive та інкрементального XHR POST ?after=
+      if (!fetchedFromBackend) {
+        try {
+          final directMsgs = await _fetchDirectTelegramChannels();
+          if (directMsgs.isNotEmpty && !_disposed) {
+            state = directMsgs;
+          }
+        } catch (_) {}
+      }
+    } finally {
+      _isFetching = false;
     }
 
-    // 2. Автономний HTTPS-режим для реального смартфона (виключно TLS шифрування, нуль локальних IP)
-    if (!fetchedFromBackend) {
-      try {
-        final directMsgs = await _fetchDirectTelegramChannels();
-        if (directMsgs.isNotEmpty) {
-          state = deduplicateMessages(directMsgs);
-        }
-      } catch (_) {}
-    }
-
+    if (_disposed) return;
     _isFirstLoad = false;
     _timer?.cancel();
     final alerts = ref.read(alertsProvider);
     final bool isAlert = alerts['м. Київ'] == true || alerts['Київська область'] == true;
     final bool hasThreats = state.any((m) => m['type'] == 'danger');
-    final int nextIntervalSec = (isAlert || hasThreats) ? 5 : 10;
-    _timer = Timer(Duration(seconds: nextIntervalSec), _fetchData);
+    // Інтервал опитування: 2.5 с під час тривоги або активних загроз, 4.0 с у спокійному режимі
+    final int nextIntervalMs = (isAlert || hasThreats) ? 2500 : 4000;
+    _timer = Timer(Duration(milliseconds: nextIntervalMs), _fetchData);
   }
-  
+
   bool get isLoading => _isFirstLoad && state.isEmpty;
 }
 
@@ -842,6 +997,48 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     }
   }
   final MapController _mapController = MapController();
+  Timer? _mapCameraAnimTimer;
+
+  void _animatedMapMove(LatLng destLocation, double destZoom) {
+    _mapCameraAnimTimer?.cancel();
+    if (!kIsWeb && Platform.environment.containsKey('FLUTTER_TEST')) {
+      try {
+        _mapController.move(destLocation, destZoom);
+      } catch (_) {}
+      return;
+    }
+    try {
+      final startCenter = _mapController.camera.center;
+      final startZoom = _mapController.camera.zoom;
+      const int totalSteps = 14;
+      int step = 0;
+      _mapCameraAnimTimer = Timer.periodic(const Duration(milliseconds: 28), (timer) {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+        step++;
+        final double t = Curves.easeOutCubic.transform((step / totalSteps).clamp(0.0, 1.0));
+        final double lat = startCenter.latitude + (destLocation.latitude - startCenter.latitude) * t;
+        final double lon = startCenter.longitude + (destLocation.longitude - startCenter.longitude) * t;
+        final double zoom = startZoom + (destZoom - startZoom) * t;
+        try {
+          _mapController.move(LatLng(lat, lon), zoom);
+        } catch (_) {
+          timer.cancel();
+          return;
+        }
+        if (step >= totalSteps) {
+          timer.cancel();
+        }
+      });
+    } catch (_) {
+      try {
+        _mapController.move(destLocation, destZoom);
+      } catch (_) {}
+    }
+  }
+
   final Set<String> _alertedLocationThreatKeys = {};
 
   final GlobalKey _radarRepaintKey = GlobalKey();
@@ -1168,6 +1365,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _settingsAnimController.dispose();
+    _mapCameraAnimTimer?.cancel();
     _replayPlayTimer?.cancel();
     _widgetSyncDebounceTimer?.cancel();
     _rulerClearTimer?.cancel();
@@ -1178,6 +1376,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      ref.read(messagesProvider.notifier).refreshNow();
+      ref.read(alertsProvider.notifier).refreshNow();
       final now = DateTime.now();
       if (_lastResumeCheck == null || now.difference(_lastResumeCheck!).inSeconds > 60) {
         _lastResumeCheck = now;
@@ -1860,8 +2060,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                               ? DateTime.now().toUtc().add(Duration(seconds: (_replayOffsetMinutes * 60).round()))
                               : DateTime.now().toUtc();
 
-                          final firstMsgId = messages.isNotEmpty ? messages.first['id'] : null;
-                          final trajectorySig = '${firstMsgId}_${messages.length}_${alerts['м. Київ']}_${alerts['Київська область']}_${_isReplayMode}_${_replayOffsetMinutes.toStringAsFixed(1)}_${now.millisecondsSinceEpoch ~/ 5000}';
+                          final topMsgsSig = messages.take(12).map((m) {
+                            final mergedLen = (m['merged_msg_ids'] as List?)?.length ?? 0;
+                            final txtLen = (m['text'] ?? '').toString().length;
+                            return '${m['id']}:${m['date']}:$txtLen:$mergedLen';
+                          }).join('|');
+                          final trajectorySig = '${topMsgsSig}_${messages.length}_${alerts['м. Київ']}_${alerts['Київська область']}_${_isReplayMode}_${_replayOffsetMinutes.toStringAsFixed(1)}_${now.millisecondsSinceEpoch ~/ 2500}';
 
                           List<Map<String, dynamic>> activeAirDefenses = [];
                           String? northThreatLabel;
@@ -1890,7 +2094,8 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             DateTime mTime = now;
                             try {
                               mTime = DateTime.parse(msg['date']).toUtc();
-                              if (mTime.isAfter(now)) continue;
+                              if (_isReplayMode && mTime.isAfter(now)) continue;
+                              if (!_isReplayMode && mTime.isAfter(now)) mTime = now;
                             } catch (_) {
                               continue;
                             }
@@ -2047,7 +2252,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                               if (msg['date'] == null) return true;
                               try {
                                 final msgTime = DateTime.parse(msg['date']).toUtc();
-                                if (msgTime.isAfter(now)) return false;
+                                if (_isReplayMode && msgTime.isAfter(now)) return false;
                                 return now.difference(msgTime).inMinutes <= 25;
                               } catch (_) {
                                 return true;
@@ -2070,6 +2275,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                               if (msg['date'] != null) {
                                 try {
                                   msgTime = DateTime.parse(msg['date']).toUtc();
+                                  if (!_isReplayMode && msgTime.isAfter(now)) {
+                                    msgTime = now;
+                                  }
                                 } catch (_) {}
                               }
 
@@ -3840,16 +4048,18 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         );
                                       }).toList(),
                                     ),
-                                  AnimatedThreatsLayer(
-                                    threats: threats,
-                                    airDefenses: activeAirDefenses,
-                                    selectedMsgId: _selectedThreatMsgId,
-                                    onSelectThreat: (msgId) {
-                                      setState(() {
-                                        _selectedThreatMsgId = msgId;
-                                      });
-                                    },
-                                    effectiveNow: now,
+                                  RepaintBoundary(
+                                    child: AnimatedThreatsLayer(
+                                      threats: threats,
+                                      airDefenses: activeAirDefenses,
+                                      selectedMsgId: _selectedThreatMsgId,
+                                      onSelectThreat: (msgId) {
+                                        setState(() {
+                                          _selectedThreatMsgId = msgId;
+                                        });
+                                      },
+                                      effectiveNow: now,
+                                    ),
                                   ),
                                   if (_rulerTargetPoint != null) ...[
                                     PolylineLayer(
@@ -4070,7 +4280,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         const SizedBox(width: 6),
                                         InkWell(
                                           onTap: () {
-                                            _mapController.move(dangerLocation!.point, 13.0);
+                                            _animatedMapMove(dangerLocation!.point, 13.0);
                                           },
                                           borderRadius: BorderRadius.circular(20),
                                           child: Container(
@@ -4483,7 +4693,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       if (closestPt != null) {
                                         final midLat = (activeHome.point.latitude + closestPt.latitude) / 2.0;
                                         final midLon = (activeHome.point.longitude + closestPt.longitude) / 2.0;
-                                        _mapController.move(LatLng(midLat, midLon), 9.8);
+                                        _animatedMapMove(LatLng(midLat, midLon), 9.8);
                                         setState(() {
                                           _isSmartFocusActive = true;
                                         });
@@ -4491,7 +4701,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       }
                                     }
 
-                                    _mapController.move(const LatLng(50.4501, 30.5234), isWide ? 8.2 : 8.8);
+                                    _animatedMapMove(const LatLng(50.4501, 30.5234), isWide ? 8.2 : 8.8);
                                     setState(() {
                                       _isSmartFocusActive = false;
                                     });
@@ -4801,7 +5011,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   }
                                 }
                                 if (targetPos != null) {
-                                  _mapController.move(targetPos, 10.8);
+                                  _animatedMapMove(targetPos, 10.8);
                                   setState(() {
                                     _selectedThreatMsgId = msg['id'];
                                   });
@@ -4928,7 +5138,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
         right: 8,
         child: SizeTransition(
           sizeFactor: _settingsAnimation,
-          axisAlignment: -1.0,
+          alignment: Alignment.topCenter,
           child: FadeTransition(
             opacity: _settingsAnimation,
             child: _buildSettingsDropdownMenu(context, isTestMode, watchedLocations, remoteConfig),
@@ -5009,7 +5219,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                 scale: 0.75,
                 child: Switch.adaptive(
                   value: isVoiceEnabled,
-                  activeColor: Colors.cyanAccent,
+                  activeThumbColor: Colors.cyanAccent,
                   onChanged: (val) async {
                     await VoiceAlertService.instance.setEnabled(val);
                     if (!mounted) return;
@@ -5081,7 +5291,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                 scale: 0.75,
                 child: Switch.adaptive(
                   value: isTestMode,
-                  activeColor: Colors.greenAccent,
+                  activeThumbColor: Colors.greenAccent,
                   onChanged: (val) {
                     ref.read(testModeProvider.notifier).toggle();
                     _staticTestModeTime = DateTime.now().toUtc().toIso8601String();
@@ -5363,6 +5573,77 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
     return result;
   }
 
+  LatLng _projectLatLng(LatLng origin, double bearingRad, double distanceMeters) {
+    if (distanceMeters.abs() < 0.1) return origin;
+    const double earthRadius = 6378137.0;
+    final double d = distanceMeters / earthRadius;
+    final double lat1 = origin.latitude * math.pi / 180.0;
+    final double lon1 = origin.longitude * math.pi / 180.0;
+    final double lat2 = math.asin(
+      math.sin(lat1) * math.cos(d) + math.cos(lat1) * math.sin(d) * math.cos(bearingRad),
+    );
+    final double lon2 = lon1 + math.atan2(
+      math.sin(bearingRad) * math.sin(d) * math.cos(lat1),
+      math.cos(d) - math.sin(lat1) * math.sin(lat2),
+    );
+    return LatLng(lat2 * 180.0 / math.pi, lon2 * 180.0 / math.pi);
+  }
+
+  (LatLng, double, double) _interpolateCatmullRomLeg(
+    LatLng p0,
+    LatLng p1,
+    LatLng p2,
+    LatLng p3,
+    double t,
+  ) {
+    const double iconRotationOffset = math.pi / 4;
+    final double tc = t.clamp(0.0, 1.0);
+    final double t2 = tc * tc;
+    final double t3 = t2 * tc;
+
+    final double lat = 0.5 * (
+      (2.0 * p1.latitude) +
+      (-p0.latitude + p2.latitude) * tc +
+      (2.0 * p0.latitude - 5.0 * p1.latitude + 4.0 * p2.latitude - p3.latitude) * t2 +
+      (-p0.latitude + 3.0 * p1.latitude - 3.0 * p2.latitude + p3.latitude) * t3
+    );
+    final double lon = 0.5 * (
+      (2.0 * p1.longitude) +
+      (-p0.longitude + p2.longitude) * tc +
+      (2.0 * p0.longitude - 5.0 * p1.longitude + 4.0 * p2.longitude - p3.longitude) * t2 +
+      (-p0.longitude + 3.0 * p1.longitude - 3.0 * p2.longitude + p3.longitude) * t3
+    );
+
+    final double dLatDt = 0.5 * (
+      (-p0.latitude + p2.latitude) +
+      2.0 * (2.0 * p0.latitude - 5.0 * p1.latitude + 4.0 * p2.latitude - p3.latitude) * tc +
+      3.0 * (-p0.latitude + 3.0 * p1.latitude - 3.0 * p2.latitude + p3.latitude) * t2
+    );
+    final double dLonDt = 0.5 * (
+      (-p0.longitude + p2.longitude) +
+      2.0 * (2.0 * p0.longitude - 5.0 * p1.longitude + 4.0 * p2.longitude - p3.longitude) * tc +
+      3.0 * (-p0.longitude + 3.0 * p1.longitude - 3.0 * p2.longitude + p3.longitude) * t2
+    );
+
+    final pos = LatLng(lat, lon);
+    final double dyScreen = -dLatDt;
+    final double dxCorrected = math.cos(math.pi / 180.0 * lat) * dLonDt;
+    if (dyScreen.abs() > 1e-7 || dxCorrected.abs() > 1e-7) {
+      final double rotRad = math.atan2(dyScreen, dxCorrected) + iconRotationOffset;
+      final double bearingRad = math.atan2(dxCorrected, dLatDt);
+      return (pos, rotRad, bearingRad);
+    }
+    final fallback = _interpolatePosAndAngle([p1, p2], tc);
+    return (pos, fallback.$2, _calculateBearing(p1, p2));
+  }
+
+  String _compassDirectionFromBearing(double bearingRad) {
+    final double deg = ((bearingRad * 180.0 / math.pi) % 360.0 + 360.0) % 360.0;
+    const dirs = ['Пн', 'Пн-Сх', 'Сх', 'Пд-Сх', 'Пд', 'Пд-Зх', 'Зх', 'Пн-Зх'];
+    final int idx = ((deg + 22.5) / 45.0).floor() % 8;
+    return dirs[idx];
+  }
+
   @override
   Widget build(BuildContext context) {
     if (widget.threats.isEmpty && widget.airDefenses.isEmpty) return const SizedBox.shrink();
@@ -5371,9 +5652,33 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
       animation: _controller,
       builder: (context, child) {
         final nowMs = DateTime.now().millisecondsSinceEpoch;
+        final effectiveNow = widget.effectiveNow ?? DateTime.now().toUtc();
+
+        // 3-рівневий адаптивний FPS:
+        // 60 мс (~16.6 FPS) — ППО, радарний пінг нової цілі (< 12с), хвиля збиття, стрімке зниження, ракети/реактиви або виділена ціль
+        // 100 мс (10 FPS) — активний політ по маршруту або кружляння на орбіті
+        // 300 мс (~3.3 FPS) — енергоощадний інерційний режим під час тривалих тривог
         final bool hasUrgentAnimation = widget.airDefenses.isNotEmpty ||
-            widget.threats.any((t) => t['isDescending'] == true && t['isDestroyed'] != true);
-        final int throttleIntervalMs = hasUrgentAnimation ? 80 : 350;
+            widget.selectedMsgId != null ||
+            widget.threats.any((t) {
+              if (t['isDestroyed'] == true) return true;
+              final msgTime = (t['lastUpdated'] as DateTime?) ?? effectiveNow;
+              final elapsed = effectiveNow.difference(msgTime).inSeconds;
+              if (elapsed >= -5 && elapsed <= 12) return true;
+              final typeStr = (t['type'] ?? '').toString();
+              return t['isDescending'] == true ||
+                  typeStr.contains('missile') ||
+                  typeStr == 'kab' ||
+                  typeStr == 'shahed_jet';
+            });
+        final bool hasActiveFlight = !hasUrgentAnimation &&
+            widget.threats.any((t) {
+              if (t['isDestroyed'] == true) return false;
+              if (t['isCircling'] == true) return true;
+              final msgTime = (t['lastUpdated'] as DateTime?) ?? effectiveNow;
+              return effectiveNow.difference(msgTime).inSeconds < 160;
+            });
+        final int throttleIntervalMs = hasUrgentAnimation ? 60 : (hasActiveFlight ? 100 : 300);
         if (_cachedLayerWidget != null && (nowMs - _lastFrameTimestampMs) < throttleIntervalMs) {
           return _cachedLayerWidget!;
         }
@@ -5384,15 +5689,15 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
         List<Polyline> polylines = [];
         List<CircleMarker> targetCircles = [];
 
-        final effectiveNow = widget.effectiveNow ?? DateTime.now().toUtc();
-
-        // 1. Попередній розрахунок координат для кластеризації рою
+        // 1. Попередній розрахунок кінематичних координат, кутів та миттєвої швидкості
         final Map<int, LatLng> activePositions = {};
         final Map<int, double> activeRotations = {};
         final Map<int, double> activeElapsedSecs = {};
         final Map<int, double> activeEffectiveElapsedSecs = {};
         final Map<int, double> activeSpeedMs = {};
         final Map<int, double> activeGeoBearings = {};
+        final Map<int, double> activeFractions = {};
+        final Map<int, bool> activeInOrbit = {};
 
         for (var i = 0; i < widget.threats.length; i++) {
           final t = widget.threats[i];
@@ -5400,7 +5705,8 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
           if (path.isEmpty) continue;
           final bool isDestroyed = t['isDestroyed'] == true;
           final msgTime = (t['lastUpdated'] as DateTime?) ?? effectiveNow;
-          final elapsedSec = effectiveNow.difference(msgTime).inMilliseconds / 1000.0;
+          final rawElapsedSec = effectiveNow.difference(msgTime).inMilliseconds / 1000.0;
+          final elapsedSec = rawElapsedSec < 0.0 ? 0.0 : rawElapsedSec;
           final staggerDelay = (t['staggerDelay'] as num?)?.toDouble() ?? 0.0;
           final effectiveElapsedSec = elapsedSec - staggerDelay;
 
@@ -5411,21 +5717,26 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
             activeEffectiveElapsedSecs[i] = effectiveElapsedSec;
             activeSpeedMs[i] = 0.0;
             activeGeoBearings[i] = 0.0;
+            activeFractions[i] = 1.0;
+            activeInOrbit[i] = false;
             continue;
           }
 
-          final int threatTtl = (t['ttl'] as int?) ?? getThreatTtlSeconds(t['type']?.toString() ?? '', isExitingOblast: t['isExitingOblast'] == true);
+          final typeStr = (t['type'] ?? '').toString();
+          final int threatTtl = (t['ttl'] as int?) ?? getThreatTtlSeconds(typeStr, isExitingOblast: t['isExitingOblast'] == true);
           if (elapsedSec > threatTtl) continue;
 
           final speedKmh = (t['speed'] as num?)?.toDouble() ?? 500.0;
-          final speedMs = speedKmh * (1000.0 / 3600.0);
+          final baseSpeedMs = speedKmh * (1000.0 / 3600.0);
+          double currentInstantSpeedMs = baseSpeedMs;
 
+          final waypoints = (t['waypoints'] as List<LatLng>?) ?? path;
           final activeLeg = path.length >= 2 ? [path[path.length - 2], path.last] : path;
           double legDistance = 0;
           if (activeLeg.length >= 2) {
             legDistance = const Distance().as(LengthUnit.Meter, activeLeg[0], activeLeg[1]);
           }
-          final realTravelSec = activeLeg.length == 1 ? 0.0 : (legDistance / speedMs);
+          final realTravelSec = activeLeg.length == 1 ? 0.0 : (legDistance / baseSpeedMs);
 
           LatLng currentPos;
           double rotationAngle;
@@ -5434,13 +5745,46 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
             geoBearing = _calculateBearing(path[path.length - 2], path.last);
           }
 
+          final bool isMissile = typeStr.contains('missile') || typeStr == 'kab';
           final bool isCircling = t['isCircling'] == true;
+          final int msgIdHash = (t['msgId'] is int) ? (t['msgId'] as int) : t['msgId'].hashCode;
+          final double targetPhaseOffset = ((i * 1.6180339) + (msgIdHash.abs() % 17) * 0.37) % (2.0 * math.pi);
+          final bool orbitClockwise = (i + msgIdHash.abs()) % 2 == 0;
+
+          double fraction = 0.0;
+          bool inOrbit = false;
+
           if (isCircling) {
-            final circleRes = _calculateCirclingPosAndAngle(path.last, elapsedSec);
+            // Десинхронізована орбіта кружляння для уникнення накладання кількох цілей в одній точці
+            final double radiusScale = 0.85 + ((i % 3) * 0.14);
+            final circleRes = _calculateCirclingPosAndAngle(
+              path.last,
+              elapsedSec.clamp(0.0, 3600.0),
+              phaseOffset: targetPhaseOffset,
+              radiusScale: radiusScale,
+              clockwise: orbitClockwise,
+            );
             currentPos = circleRes.$1;
             rotationAngle = circleRes.$2;
+            geoBearing = (math.pi / 2.0) - (rotationAngle - math.pi / 4.0);
+            fraction = 1.0;
+            inOrbit = true;
+          } else if (path.length == 1 && !isMissile) {
+            // Одиночна локація без вектора (напр. "БпЛА над Броварами" або "в районі Обухова"):
+            // плавне патрулювання над вказаним районом замість "мертвої" статичної іконки
+            final circleRes = _calculateCirclingPosAndAngle(
+              path.first,
+              elapsedSec.clamp(0.0, 3600.0),
+              phaseOffset: targetPhaseOffset,
+              radiusScale: 0.45,
+              clockwise: orbitClockwise,
+            );
+            currentPos = circleRes.$1;
+            rotationAngle = circleRes.$2;
+            geoBearing = (math.pi / 2.0) - (rotationAngle - math.pi / 4.0);
+            fraction = 1.0;
+            inOrbit = true;
           } else {
-            double fraction = 0.0;
             if (realTravelSec > 0) {
               if (effectiveElapsedSec > 0) {
                 fraction = effectiveElapsedSec / realTravelSec;
@@ -5449,25 +5793,57 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
               fraction = 1.0;
             }
 
-            final interpRes = _interpolatePosAndAngle(activeLeg, fraction.clamp(0.0, 1.0));
-            currentPos = interpRes.$1;
-            rotationAngle = interpRes.$2;
+            if (fraction < 1.0 && waypoints.length >= 3) {
+              // Плавне проходження поворотів по кривій Catmull-Rom для маршрутів із >= 3 точками
+              final p0 = waypoints[waypoints.length - 3];
+              final p1 = waypoints[waypoints.length - 2];
+              final p2 = waypoints.last;
+              final p3 = waypoints.last;
+              final splineRes = _interpolateCatmullRomLeg(p0, p1, p2, p3, fraction);
+              currentPos = splineRes.$1;
+              rotationAngle = splineRes.$2;
+              geoBearing = splineRes.$3;
+            } else {
+              final interpRes = _interpolatePosAndAngle(activeLeg, fraction.clamp(0.0, 1.0));
+              currentPos = interpRes.$1;
+              rotationAngle = interpRes.$2;
+            }
 
-            final typeStr = (t['type'] ?? '').toString();
-            final bool isMissile = typeStr.contains('missile') || typeStr == 'kab';
-            final bool isLastPtKyiv = (path.last.latitude - 50.450).abs() < 0.05 && (path.last.longitude - 30.523).abs() < 0.05;
-
-            if (!isMissile && !isLastPtKyiv && fraction >= 1.0 && path.length >= 2 && elapsedSec <= 240.0) {
-              final double extraTimeSec = (effectiveElapsedSec - realTravelSec).clamp(0.0, 240.0);
+            // Експоненційна інерційна екстраполяція після досягнення кінцевої точки маршруту
+            if (fraction >= 1.0 && path.length >= 2) {
+              final double extraTimeSec = (effectiveElapsedSec - realTravelSec).clamp(0.0, 300.0);
               if (extraTimeSec > 0) {
-                final double extraDistMeters = (extraTimeSec * speedMs * 0.35).clamp(0.0, 5000.0);
-                const double earthRadius = 6378137.0;
-                final double d = extraDistMeters / earthRadius;
-                final double lat1 = path.last.latitude * math.pi / 180.0;
-                final double lon1 = path.last.longitude * math.pi / 180.0;
-                final double lat2 = math.asin(math.sin(lat1) * math.cos(d) + math.cos(lat1) * math.sin(d) * math.cos(geoBearing));
-                final double lon2 = lon1 + math.atan2(math.sin(geoBearing) * math.sin(d) * math.cos(lat1), math.cos(d) - math.sin(lat1) * math.sin(lat2));
-                currentPos = LatLng(lat2 * 180.0 / math.pi, lon2 * 180.0 / math.pi);
+                final bool isLastPtKyiv = (path.last.latitude - 50.450).abs() < 0.05 &&
+                    (path.last.longitude - 30.523).abs() < 0.05;
+                // Часова стала загасання швидкості tau (сек) та ліміт інерційного вибігу
+                final double tau = isMissile ? 75.0 : (isLastPtKyiv ? 55.0 : 135.0);
+                final double maxExtraMeters = isMissile ? 18000.0 : (isLastPtKyiv ? 2800.0 : 9500.0);
+                final double decayFactor = math.exp(-extraTimeSec / tau);
+                currentInstantSpeedMs = baseSpeedMs * decayFactor.clamp(0.25, 1.0);
+                final double extraDistMeters = (baseSpeedMs * tau * (1.0 - decayFactor)).clamp(0.0, maxExtraMeters);
+
+                final LatLng coastedPos = _projectLatLng(path.last, geoBearing, extraDistMeters);
+
+                // Якщо БпЛА тривалий час не отримує нових точок або дійшов до центру Києва —
+                // плавно переходить у мікро-орбіту баражування в районі виходу
+                final double loiterThresholdSec = isLastPtKyiv ? 35.0 : 115.0;
+                if (!isMissile && extraTimeSec > loiterThresholdSec) {
+                  final double loiterTime = extraTimeSec - loiterThresholdSec;
+                  final double blend = (loiterTime / 20.0).clamp(0.0, 1.0);
+                  final circleRes = _calculateCirclingPosAndAngle(
+                    coastedPos,
+                    loiterTime,
+                    phaseOffset: geoBearing,
+                    radiusScale: 0.35 * blend,
+                    clockwise: orbitClockwise,
+                  );
+                  currentPos = circleRes.$1;
+                  rotationAngle = circleRes.$2;
+                  geoBearing = (math.pi / 2.0) - (rotationAngle - math.pi / 4.0);
+                  inOrbit = blend > 0.6;
+                } else {
+                  currentPos = coastedPos;
+                }
               }
             }
           }
@@ -5476,8 +5852,10 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
           activeRotations[i] = rotationAngle;
           activeElapsedSecs[i] = elapsedSec;
           activeEffectiveElapsedSecs[i] = effectiveElapsedSec;
-          activeSpeedMs[i] = speedMs;
+          activeSpeedMs[i] = currentInstantSpeedMs;
           activeGeoBearings[i] = geoBearing;
+          activeFractions[i] = fraction;
+          activeInOrbit[i] = inOrbit;
         }
 
         // 2. Кластеризація рою: якщо в радіусі 1.5 км рухається група з >= 3 однотипних цілей
@@ -5583,7 +5961,7 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
           }
         }
 
-        // 4. Рендеринг активних цілей
+        // 4. Рендеринг активних цілей та тактичної візуалізації
         for (var i = 0; i < widget.threats.length; i++) {
           if (!activePositions.containsKey(i)) continue;
           final t = widget.threats[i];
@@ -5593,6 +5971,8 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
           final elapsedSec = activeElapsedSecs[i]!;
           final speedMs = activeSpeedMs[i]!;
           final geoBearing = activeGeoBearings[i]!;
+          final activeFraction = activeFractions[i] ?? 1.0;
+          final inOrbit = activeInOrbit[i] ?? false;
 
           final bool isDestroyed = t['isDestroyed'] == true;
           final typeStr = t['type'].toString();
@@ -5601,14 +5981,13 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
           final bool isDescending = t['isDescending'] == true;
           final String? altitude = t['altitude'] as String?;
           final int? altitudeMeters = t['altitudeMeters'] as int?;
+          final double baseSpeedKmh = (t['speed'] as num?)?.toDouble() ?? 185.0;
 
-          final bool isSelected = widget.selectedMsgId != null && t['msgId'] == widget.selectedMsgId;
+          final bool isSelected = widget.selectedMsgId != null &&
+              (t['msgId'] == widget.selectedMsgId ||
+                  (t['historyMsgIds'] as Set?)?.contains(widget.selectedMsgId) == true);
 
           // Старіння контакту (Confidence Decay):
-          // Confidence Decay масштабується за адаптивним TTL цілі:
-          // 0..40% TTL: 100% яскравість (opacity 1.0), неонове світіння
-          // 40..70% TTL: opacity 0.7 + мітка часу
-          // > 70% TTL: режим "Ghost" (opacity 0.4 + ?)
           double opacity = 1.0;
           bool isGhost = false;
           String? decayTimeTag;
@@ -5617,17 +5996,17 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
           if (elapsedSec <= ttlForDecay * 0.4) {
             opacity = 1.0;
           } else if (elapsedSec <= ttlForDecay * 0.7) {
-            opacity = 0.7;
+            opacity = 0.72;
             final minAgo = (elapsedSec / 60).floor();
             decayTimeTag = minAgo > 0 ? '$minAgoхв' : '${elapsedSec.round()}с';
           } else {
-            opacity = 0.4;
+            opacity = 0.42;
             isGhost = true;
             final minAgo = (elapsedSec / 60).floor();
             decayTimeTag = minAgo > 0 ? '$minAgoхв' : '${elapsedSec.round()}с';
           }
 
-          // Лінія маршруту та пройденої траєкторії (waypoints)
+          // Лінія маршруту та пройденої траєкторії (waypoints) із двоступеневим загасанням шлейфу
           final waypoints = (t['waypoints'] as List<LatLng>?) ?? path;
           final List<LatLng> trailRaw = waypoints.isNotEmpty
               ? (waypoints.length > 1 ? [...waypoints.sublist(0, waypoints.length - 1), currentPos] : [currentPos])
@@ -5639,7 +6018,7 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
               polylines.add(
                 Polyline(
                   points: smoothPoints,
-                  color: Colors.cyanAccent.withValues(alpha: 0.5),
+                  color: Colors.cyanAccent.withValues(alpha: 0.45),
                   strokeWidth: 8.0,
                 ),
               );
@@ -5647,25 +6026,66 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
                 Polyline(
                   points: smoothPoints,
                   color: Colors.cyanAccent,
-                  strokeWidth: 3.5,
+                  strokeWidth: 3.2,
+                ),
+              );
+            } else if (isDestroyed) {
+              polylines.add(
+                Polyline(
+                  points: smoothPoints,
+                  color: Colors.greenAccent.withValues(alpha: 0.22),
+                  strokeWidth: 4.5,
+                ),
+              );
+              polylines.add(
+                Polyline(
+                  points: smoothPoints,
+                  color: Colors.greenAccent.withValues(alpha: 0.75),
+                  strokeWidth: 2.0,
+                  pattern: StrokePattern.dashed(segments: const [6, 4]),
+                ),
+              );
+            } else if (smoothPoints.length >= 6) {
+              // Двоступеневий шлейф: старіший хвіст напівпрозорий, свіжий слід — яскравий із неоновим ореолом
+              final int splitIdx = (smoothPoints.length * 0.45).floor().clamp(1, smoothPoints.length - 2);
+              final List<LatLng> olderSegment = smoothPoints.sublist(0, splitIdx + 1);
+              final List<LatLng> recentSegment = smoothPoints.sublist(splitIdx);
+
+              polylines.add(
+                Polyline(
+                  points: olderSegment,
+                  color: trailColor.withValues(alpha: 0.38 * opacity),
+                  strokeWidth: 1.6,
+                  pattern: StrokePattern.dashed(segments: const [4, 5]),
+                ),
+              );
+              polylines.add(
+                Polyline(
+                  points: recentSegment,
+                  color: trailColor.withValues(alpha: 0.24 * opacity),
+                  strokeWidth: 5.0,
+                ),
+              );
+              polylines.add(
+                Polyline(
+                  points: recentSegment,
+                  color: trailColor.withValues(alpha: 0.90 * opacity),
+                  strokeWidth: 2.3,
+                  pattern: StrokePattern.dashed(segments: const [6, 4]),
                 ),
               );
             } else {
               polylines.add(
                 Polyline(
                   points: smoothPoints,
-                  color: isDestroyed 
-                      ? Colors.greenAccent.withValues(alpha: 0.25)
-                      : trailColor.withValues(alpha: 0.25 * opacity),
+                  color: trailColor.withValues(alpha: 0.24 * opacity),
                   strokeWidth: 5.0,
                 ),
               );
               polylines.add(
                 Polyline(
                   points: smoothPoints,
-                  color: isDestroyed 
-                      ? Colors.greenAccent.withValues(alpha: 0.8)
-                      : trailColor.withValues(alpha: 0.85 * opacity),
+                  color: trailColor.withValues(alpha: 0.88 * opacity),
                   strokeWidth: 2.2,
                   pattern: StrokePattern.dashed(segments: const [6, 4]),
                 ),
@@ -5673,14 +6093,27 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
             }
           }
 
+          // Лінія до цільової точки маршруту, поки ціль ще летить по відрізку (activeFraction < 1.0)
+          if (!isDestroyed && !isCircling && activeFraction < 0.98 && path.length >= 2) {
+            polylines.add(
+              Polyline(
+                points: [currentPos, path.last],
+                color: trailColor.withValues(alpha: 0.32 * opacity),
+                strokeWidth: 1.3,
+                pattern: const StrokePattern.dotted(),
+              ),
+            );
+          }
+
           // Вузлові точки (waypoint dots) на поворотах маршруту
           if (!isDestroyed && waypoints.length >= 2) {
             for (int w = 0; w < waypoints.length - 1; w++) {
+              final double wpFade = (w + 1) / waypoints.length;
               targetCircles.add(
                 CircleMarker(
                   point: waypoints[w],
-                  radius: 3.0,
-                  color: trailColor.withValues(alpha: 0.65 * opacity),
+                  radius: 2.8,
+                  color: trailColor.withValues(alpha: (0.35 + 0.40 * wpFade) * opacity),
                   borderColor: Colors.black87,
                   borderStrokeWidth: 1.0,
                 ),
@@ -5688,126 +6121,166 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
             }
           }
 
-          // Якщо ціль збита/знищена
+          // Якщо ціль збита/знищена — хвиля детонації + тактична плашка
           if (isDestroyed) {
+            final destroyedAt = (t['destroyedAt'] as DateTime?) ?? (t['lastUpdated'] as DateTime?) ?? effectiveNow;
+            final double destroyedElapsed = (effectiveNow.difference(destroyedAt).inMilliseconds / 1000.0).clamp(0.0, 35.0);
+            final double waveFade = (1.0 - (destroyedElapsed / 35.0)).clamp(0.15, 1.0);
+            final double wavePulse = (_controller.value * 2.5) % 1.0;
+
+            targetCircles.add(
+              CircleMarker(
+                point: path.last,
+                radius: 8.0 + wavePulse * 18.0,
+                color: Colors.greenAccent.withValues(alpha: (1.0 - wavePulse) * 0.25 * waveFade),
+                borderColor: Colors.greenAccent.withValues(alpha: (1.0 - wavePulse) * 0.75 * waveFade),
+                borderStrokeWidth: 1.5,
+              ),
+            );
+
             markers.add(
               Marker(
                 point: path.last,
                 width: 220,
                 height: 48,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.black87,
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: Colors.greenAccent, width: 1.2),
-                        boxShadow: const [
-                          BoxShadow(color: Colors.black54, blurRadius: 4, offset: Offset(0, 2))
-                        ],
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.shield, color: Colors.greenAccent, size: 14),
-                          SizedBox(width: 4),
-                          Text(
-                            'Ціль знищено / втрачено',
-                            style: TextStyle(
-                              color: Colors.greenAccent,
-                              fontSize: 9.5,
-                              fontWeight: FontWeight.bold,
+                child: Opacity(
+                  opacity: waveFade,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xE60A1E14),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: Colors.greenAccent, width: 1.2),
+                          boxShadow: const [
+                            BoxShadow(color: Colors.black54, blurRadius: 4, offset: Offset(0, 2))
+                          ],
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.shield, color: Colors.greenAccent, size: 14),
+                            SizedBox(width: 4),
+                            Text(
+                              'Ціль знищено / втрачено',
+                              style: TextStyle(
+                                color: Colors.greenAccent,
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 2),
-                    const Icon(Icons.check_circle_outline, color: Colors.greenAccent, size: 18),
-                  ],
+                      const SizedBox(height: 2),
+                      const Icon(Icons.check_circle_outline, color: Colors.greenAccent, size: 18),
+                    ],
+                  ),
                 ),
               ),
             );
             continue;
           }
 
-          // Якщо кружляє
+          // Якщо кружляє — показуємо пунктирну орбіту баражування
           if (isCircling) {
+            final double radiusScale = 0.85 + ((i % 3) * 0.14);
             final orbitPoints = <LatLng>[];
             for (int s = 0; s <= 32; s++) {
               final a = (s / 32.0) * 2.0 * math.pi;
               orbitPoints.add(LatLng(
-                path.last.latitude + 0.016 * math.sin(a),
-                path.last.longitude + 0.026 * math.cos(a),
+                path.last.latitude + 0.015 * radiusScale * math.sin(a),
+                path.last.longitude + 0.024 * radiusScale * math.cos(a),
               ));
             }
             polylines.add(
               Polyline(
                 points: orbitPoints,
-                color: trailColor.withValues(alpha: 0.6 * opacity),
+                color: trailColor.withValues(alpha: 0.55 * opacity),
                 strokeWidth: 1.5,
                 pattern: const StrokePattern.dotted(),
               ),
             );
           }
 
-          // Кільце в кінцевій точці
+          // Кільце в кінцевій точці маршруту
           targetCircles.add(
             CircleMarker(
               point: path.last,
-              radius: isCircling ? 4 : 6,
-              color: trailColor.withValues(alpha: 0.35 * opacity),
-              borderColor: trailColor.withValues(alpha: opacity),
-              borderStrokeWidth: 1.5,
+              radius: isCircling ? 4 : 5.5,
+              color: trailColor.withValues(alpha: 0.30 * opacity),
+              borderColor: trailColor.withValues(alpha: 0.9 * opacity),
+              borderStrokeWidth: 1.4,
             ),
           );
 
-          // Вектор випередження (Leader Line) на 1 хвилину польоту вперед із точкою-зарубкою
-          if (!isCircling && path.length >= 2) {
+          // Вектор випередження (Velocity Leader Line) на 1 хвилину польоту вперед
+          // із 30-секундною поділкою та тактичним наконечником стрілки (chevron)
+          if (!isCircling && !inOrbit && path.length >= 2) {
             final double leadDistMeters = (speedMs * 60.0).clamp(500.0, 30000.0);
-            const double earthRadius = 6378137.0;
-            final double dLead = leadDistMeters / earthRadius;
-            final double lat1 = currentPos.latitude * math.pi / 180.0;
-            final double lon1 = currentPos.longitude * math.pi / 180.0;
-            final double lat2 = math.asin(math.sin(lat1) * math.cos(dLead) + math.cos(lat1) * math.sin(dLead) * math.cos(geoBearing));
-            final double lon2 = lon1 + math.atan2(math.sin(geoBearing) * math.sin(dLead) * math.cos(lat1), math.cos(dLead) - math.sin(lat1) * math.sin(lat2));
-            final LatLng leaderEndPt = LatLng(lat2 * 180.0 / math.pi, lon2 * 180.0 / math.pi);
+            final LatLng midLeadPt = _projectLatLng(currentPos, geoBearing, leadDistMeters * 0.5);
+            final LatLng leaderEndPt = _projectLatLng(currentPos, geoBearing, leadDistMeters);
+
+            final Color leaderColor = trailColor.withValues(alpha: (opacity * 0.80).clamp(0.22, 0.92));
 
             polylines.add(
               Polyline(
                 points: [currentPos, leaderEndPt],
-                color: trailColor.withValues(alpha: (opacity * 0.75).clamp(0.2, 0.9)),
-                strokeWidth: 1.5,
+                color: leaderColor,
+                strokeWidth: 1.6,
                 pattern: StrokePattern.dashed(segments: const [6, 4]),
               ),
             );
+
+            // Проміжна поділка +30 секунд
             targetCircles.add(
               CircleMarker(
-                point: leaderEndPt,
-                radius: 3.0,
+                point: midLeadPt,
+                radius: 2.0,
+                color: leaderColor,
+                borderColor: Colors.black54,
+                borderStrokeWidth: 0.8,
+              ),
+            );
+
+            // Наконечник стрілки напрямку (chevron) у точці +60 секунд
+            final double barbLenMeters = (leadDistMeters * 0.22).clamp(280.0, 1400.0);
+            const double barbAngleOffset = 152.0 * math.pi / 180.0;
+            final LatLng leftBarb = _projectLatLng(leaderEndPt, geoBearing + barbAngleOffset, barbLenMeters);
+            final LatLng rightBarb = _projectLatLng(leaderEndPt, geoBearing - barbAngleOffset, barbLenMeters);
+
+            polylines.add(
+              Polyline(
+                points: [leftBarb, leaderEndPt, rightBarb],
                 color: trailColor.withValues(alpha: opacity),
-                borderColor: Colors.black87,
-                borderStrokeWidth: 1.0,
+                strokeWidth: 1.8,
               ),
             );
           }
 
-          // Якщо ціль виділена (Tap-to-Inspect) - підсвічуємо кільцем
+          // Якщо ціль виділена (Tap-to-Inspect) — подвійне радарне кільце захоплення
           if (isSelected) {
+            final double selPulse = 0.5 + 0.5 * math.sin(_controller.value * 2.0 * math.pi * 3.0);
             targetCircles.add(
               CircleMarker(
                 point: currentPos,
-                radius: 18,
-                color: Colors.cyanAccent.withValues(alpha: 0.2),
+                radius: 17.0 + selPulse * 4.0,
+                color: Colors.cyanAccent.withValues(alpha: 0.18),
                 borderColor: Colors.cyanAccent,
                 borderStrokeWidth: 2.0,
               ),
             );
           }
 
-          final bool isUav = typeStr == 'shahed' || typeStr == 'shahed_jet' || typeStr == 'uav_guided' || typeStr == 'uav_recon' || typeStr == 'uav_decoy';
+          final bool isUav = typeStr == 'shahed' ||
+              typeStr == 'shahed_jet' ||
+              typeStr == 'uav_guided' ||
+              typeStr == 'uav_recon' ||
+              typeStr == 'uav_decoy';
+          final bool isMissile = typeStr.contains('missile') || typeStr == 'kab';
+          final bool isHighSpeedThreat = isMissile || typeStr == 'shahed_jet';
 
           // Акустичний радіус чутності (3200 м) для БпЛА
           if (isUav) {
@@ -5816,16 +6289,49 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
                 point: currentPos,
                 radius: 3200,
                 useRadiusInMeter: true,
-                color: Colors.yellow.withValues(alpha: 0.04 * opacity),
-                borderColor: trailColor.withValues(alpha: 0.22 * opacity),
+                color: Colors.yellow.withValues(alpha: 0.035 * opacity),
+                borderColor: trailColor.withValues(alpha: 0.20 * opacity),
                 borderStrokeWidth: 1.0,
               ),
             );
           }
 
-          // Прогнозний конус розльоту
-          if (!isCircling && path.length >= 2) {
-            forecastPolygons.add(_buildForecastCone(currentPos, geoBearing, speedMs, trailColor, isUav));
+          // Пульсуючий радарний ореол для швидкісних цілей (балістика, крилаті ракети, реактивні БпЛА)
+          if (isHighSpeedThreat && !isDescending) {
+            final double hsPulse = ((_controller.value * 3.0) + (i * 0.27)) % 1.0;
+            targetCircles.add(
+              CircleMarker(
+                point: currentPos,
+                radius: 10.0 + hsPulse * 14.0,
+                useRadiusInMeter: false,
+                color: trailColor.withValues(alpha: (1.0 - hsPulse) * 0.22 * opacity),
+                borderColor: trailColor.withValues(alpha: (1.0 - hsPulse) * 0.75 * opacity),
+                borderStrokeWidth: 1.4,
+              ),
+            );
+          }
+
+          // Радарний сонар-пінг виявлення нової або щойно оновленої цілі (перші 12 секунд)
+          if (elapsedSec >= 0.0 && elapsedSec <= 12.0 && !isDescending) {
+            final double pingWindowFade = (1.0 - (elapsedSec / 12.0)).clamp(0.15, 1.0);
+            final double pingPhase = ((_controller.value * 2.4) + (i * 0.19)) % 1.0;
+            targetCircles.add(
+              CircleMarker(
+                point: currentPos,
+                radius: 9.0 + pingPhase * 22.0,
+                useRadiusInMeter: false,
+                color: trailColor.withValues(alpha: (1.0 - pingPhase) * 0.26 * pingWindowFade * opacity),
+                borderColor: Colors.white.withValues(alpha: (1.0 - pingPhase) * 0.85 * pingWindowFade * opacity),
+                borderStrokeWidth: 1.5,
+              ),
+            );
+          }
+
+          // Прогнозний конус розльоту (з масштабуванням прозорості за Confidence Decay)
+          if (!isCircling && !inOrbit && path.length >= 2) {
+            forecastPolygons.add(
+              _buildForecastCone(currentPos, geoBearing, speedMs, trailColor, isUav, opacity: opacity),
+            );
           }
 
           // Індикатор стрімкого зниження / падіння
@@ -5843,7 +6349,6 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
             );
           }
 
-          final bool isMissile = typeStr.contains('missile') || typeStr == 'kab';
           final double iconSize = isMissile ? 20.0 : 17.0;
           final visualContent = _buildThreatAssetIcon(typeStr, size: iconSize);
           final glowingIcon = Container(
@@ -5851,18 +6356,20 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
               shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
-                  color: isDescending 
-                      ? Colors.redAccent.withValues(alpha: 0.7 * opacity) 
-                      : trailColor.withValues(alpha: 0.5 * opacity),
-                  blurRadius: 3,
-                  spreadRadius: 0.2,
+                  color: isDescending
+                      ? Colors.redAccent.withValues(alpha: 0.75 * opacity)
+                      : (isSelected
+                          ? Colors.cyanAccent.withValues(alpha: 0.8 * opacity)
+                          : trailColor.withValues(alpha: 0.55 * opacity)),
+                  blurRadius: isSelected ? 6 : 3.5,
+                  spreadRadius: isSelected ? 1.0 : 0.3,
                 )
               ],
             ),
             child: visualContent,
           );
 
-          // Кольорова індикація висоти (Echelon Color):
+          // Кольорова індикація висоти (Echelon Color) та телеметрії:
           // > 3500 м: Colors.lightBlueAccent (висотний)
           // 1500..3500 м: Colors.amberAccent (середній)
           // < 1500 м або зниження: Colors.redAccent з префіксом ↓
@@ -5879,14 +6386,21 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
           } else if (altitudeMeters != null && altitudeMeters >= 1500 && altitudeMeters <= 3500) {
             badgeColor = Colors.amberAccent;
             badgeText = altitude ?? '$altitudeMeters м';
-          } else if (isCircling) {
+          } else if (isCircling || inOrbit) {
             badgeColor = trailColor;
             badgeText = altitude != null ? '⟳ $altitude' : '⟳ кружляє';
           } else if (altitude != null) {
             badgeColor = trailColor;
             badgeText = altitude;
           } else {
-            badgeColor = trailColor;
+            badgeColor = isSelected ? Colors.cyanAccent : trailColor;
+          }
+
+          // При виділенні цілі (Tap-to-Inspect) додаємо живу телеметрію швидкості та курсу
+          if (isSelected) {
+            final String compassDir = _compassDirectionFromBearing(geoBearing);
+            final String telemetryStr = '${baseSpeedKmh.round()} км/год $compassDir';
+            badgeText = badgeText.isNotEmpty ? '$badgeText • $telemetryStr' : telemetryStr;
           }
 
           if (decayTimeTag != null) {
@@ -5896,12 +6410,38 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
               badgeText = decayTimeTag;
             }
           }
-          final bool hasBadge = badgeText.isNotEmpty;
-          final badgeBg = isDescending 
-              ? Colors.red.shade900.withValues(alpha: 0.85 * opacity) 
-              : Colors.black.withValues(alpha: 0.85 * opacity);
 
           final int? clusterCount = leadClusterBadges[i];
+          final bool isNonLeadClusterMember = clusteredIndices.contains(i) && clusterCount == null;
+          // Приховуємо дублюючі підписи у рядових дронів щільного рою, щоб не засмічувати карту
+          final bool hasBadge = badgeText.isNotEmpty && (!isNonLeadClusterMember || isSelected || isDescending);
+          final badgeBg = isDescending
+              ? Colors.red.shade900.withValues(alpha: 0.88 * opacity)
+              : (isSelected
+                  ? const Color(0xEE071E26)
+                  : Colors.black.withValues(alpha: 0.85 * opacity));
+
+          // Розумне розведення підписів (4 слоти) для сусідніх цілей у радіусі 3.5 км
+          int nearbyRank = 0;
+          if (hasBadge) {
+            for (final entry in activePositions.entries) {
+              if (entry.key < i &&
+                  const Distance().as(LengthUnit.Meter, currentPos, entry.value) < 3500.0) {
+                nearbyRank++;
+              }
+            }
+          }
+          final double badgeTopOffset = switch (nearbyRank % 4) {
+            0 => 25.0,
+            1 => -16.0,
+            2 => 36.0,
+            _ => -27.0,
+          };
+
+          // Плавний пружний імпульс масштабу при появі нової цілі (перші 1.8 секунди)
+          final double spawnScale = (elapsedSec >= 0.0 && elapsedSec < 1.8)
+              ? (1.0 + 0.22 * math.sin((elapsedSec / 1.8) * math.pi))
+              : 1.0;
 
           markers.add(
             Marker(
@@ -5917,11 +6457,14 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
                   alignment: Alignment.center,
                   clipBehavior: Clip.none,
                   children: [
-                    Transform.rotate(
-                      angle: rotationAngle,
-                      child: Opacity(
-                        opacity: opacity,
-                        child: glowingIcon,
+                    Transform.scale(
+                      scale: spawnScale,
+                      child: Transform.rotate(
+                        angle: rotationAngle,
+                        child: Opacity(
+                          opacity: opacity,
+                          child: glowingIcon,
+                        ),
                       ),
                     ),
                     if (isGhost)
@@ -5965,25 +6508,26 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
                       ),
                     if (hasBadge)
                       Positioned(
-                        top: activePositions.entries.any(
-                          (entry) => entry.key != i && const Distance().as(LengthUnit.Meter, currentPos, entry.value) < 2500.0,
-                        ) ? (i % 2 == 0 ? 25.0 : -15.0) : 25.0,
-                        left: -50,
-                        right: -50,
+                        top: badgeTopOffset,
+                        left: -65,
+                        right: -65,
                         child: Center(
                           child: Opacity(
                             opacity: opacity,
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                              padding: const EdgeInsets.symmetric(horizontal: 4.5, vertical: 1.2),
                               decoration: BoxDecoration(
                                 color: badgeBg,
                                 borderRadius: BorderRadius.circular(4),
-                                border: Border.all(color: badgeColor.withValues(alpha: 0.8), width: 0.8),
+                                border: Border.all(
+                                  color: (isSelected ? Colors.cyanAccent : badgeColor).withValues(alpha: 0.85),
+                                  width: isSelected ? 1.1 : 0.8,
+                                ),
                               ),
                               child: Text(
                                 badgeText,
                                 style: TextStyle(
-                                  color: badgeColor,
+                                  color: isSelected ? Colors.cyanAccent : badgeColor,
                                   fontSize: 8,
                                   fontWeight: FontWeight.bold,
                                   height: 1.0,

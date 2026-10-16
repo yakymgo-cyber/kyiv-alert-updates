@@ -1,8 +1,8 @@
 {
-  "version_code": 38,
-  "version_name": "1.2.35",
-  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.35/app-release.apk",
-  "changelog": "Виправлено скидання банера оновлення після встановлення нової версії",
+  "version_code": 39,
+  "version_name": "1.2.36",
+  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.36/app-release.apk",
+  "changelog": "Покращено кінематику та радарну візуалізацію цілей, прискорено отримання повідомлень з Telegram (обхід CDN-кешу), посилено захист OTA/кешу тайлів та додано плавні анімації камери й сонар-пінг виявлення",
   "extra_locations": {
     "новосілки": {
       "lat": 50.3547,

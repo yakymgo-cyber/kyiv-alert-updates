@@ -31,11 +31,19 @@ Future<String?> _getAppFilesDirPath() async {
 
 Future<File?> _getAppStorageFile(String fileName) async {
   try {
+    final normalized = fileName.trim();
+    if (normalized.isEmpty ||
+        normalized.contains('..') ||
+        normalized.contains('\\') ||
+        normalized.contains(':') ||
+        normalized.startsWith('/')) {
+      return null;
+    }
     final dirPath = await _getAppFilesDirPath();
     if (dirPath != null) {
-      return File('$dirPath/$fileName');
+      return File('$dirPath/$normalized');
     }
-    return File(fileName);
+    return File(normalized);
   } catch (_) {
     return null;
   }
@@ -44,7 +52,7 @@ Future<File?> _getAppStorageFile(String fileName) async {
 
 Future<List<Map<String, dynamic>>> searchStreetAddress(String query) async {
   final trimmed = query.trim();
-  if (trimmed.isEmpty) return [];
+  if (trimmed.isEmpty || trimmed.length > 100) return [];
   try {
     final uri = Uri.parse(
       'https://nominatim.openstreetmap.org/search?format=json&q=${Uri.encodeComponent('$trimmed, Київська область')}&limit=5&accept-language=uk',
@@ -53,7 +61,7 @@ Future<List<Map<String, dynamic>>> searchStreetAddress(String query) async {
       uri,
       headers: {'User-Agent': 'ua.kyiv.alert.monitor'},
     ).timeout(const Duration(seconds: 4));
-    if (response.statusCode == 200) {
+    if (response.statusCode == 200 && response.bodyBytes.length <= 262144) {
       final List data = json.decode(utf8.decode(response.bodyBytes));
       return data.map((item) => {
         'display_name': (item['display_name'] ?? '').toString(),

@@ -123,8 +123,8 @@ def get_remote_config():
         except Exception as e:
             return {"error": f"Failed to read config: {e}"}
     return {
-        "version_code": 38,
-        "version_name": "1.2.35",
+        "version_code": 39,
+        "version_name": "1.2.36",
         "apk_url": "",
         "changelog": "Стабільна версія Kyiv Alert Monitor",
         "extra_locations": {},

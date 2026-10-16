@@ -36,6 +36,9 @@ class LocalCachedTileProvider extends TileProvider {
 }
 
 class CachedTileImageProvider extends ImageProvider<CachedTileImageProvider> {
+  static final http.Client _sharedClient = http.Client();
+  static const int _maxTileBytes = 524288; // 512 KB max tile size
+
   final String url;
   final TileCoordinates coordinates;
   final Map<String, String> headers;
@@ -45,6 +48,19 @@ class CachedTileImageProvider extends ImageProvider<CachedTileImageProvider> {
     required this.coordinates,
     this.headers = const {},
   });
+
+  static bool _isValidPng(Uint8List bytes) {
+    return bytes.length >= 8 &&
+        bytes.length <= _maxTileBytes &&
+        bytes[0] == 0x89 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x4E &&
+        bytes[3] == 0x47 &&
+        bytes[4] == 0x0D &&
+        bytes[5] == 0x0A &&
+        bytes[6] == 0x1A &&
+        bytes[7] == 0x0A;
+  }
 
   @override
   Future<CachedTileImageProvider> obtainKey(ImageConfiguration configuration) {
@@ -66,12 +82,18 @@ class CachedTileImageProvider extends ImageProvider<CachedTileImageProvider> {
     Uint8List? imageBytes;
     File? tileFile;
 
-    try {
-      tileFile = await getAppStorageFile(
-        'map_tiles/tile_${key.coordinates.z}_${key.coordinates.x}_${key.coordinates.y}.png',
-      );
-    } catch (_) {
-      tileFile = null;
+    final int z = key.coordinates.z;
+    final int x = key.coordinates.x;
+    final int y = key.coordinates.y;
+
+    if (z >= 0 && z <= 22 && x >= 0 && y >= 0) {
+      try {
+        tileFile = await getAppStorageFile(
+          'map_tiles/tile_${z}_${x}_$y.png',
+        );
+      } catch (_) {
+        tileFile = null;
+      }
     }
 
     // 1. Check if file exists and is younger than 14 days
@@ -80,8 +102,11 @@ class CachedTileImageProvider extends ImageProvider<CachedTileImageProvider> {
         if (await tileFile.exists()) {
           final stat = await tileFile.stat();
           final age = DateTime.now().difference(stat.modified);
-          if (age.inDays < 14) {
-            imageBytes = await tileFile.readAsBytes();
+          if (age.inDays < 14 && stat.size > 8 && stat.size <= _maxTileBytes) {
+            final diskBytes = await tileFile.readAsBytes();
+            if (_isValidPng(diskBytes)) {
+              imageBytes = diskBytes;
+            }
           }
         }
       } catch (_) {
@@ -92,27 +117,30 @@ class CachedTileImageProvider extends ImageProvider<CachedTileImageProvider> {
     // 2. Fetch from network if not cached or stale
     if (imageBytes == null || imageBytes.isEmpty) {
       try {
-        final requestHeaders = {
-          'User-Agent': 'ua.kyiv.alert.monitor/1.2',
-          ...key.headers,
-        };
-        final response = await http
-            .get(Uri.parse(key.url), headers: requestHeaders)
-            .timeout(const Duration(seconds: 6));
+        final uri = Uri.tryParse(key.url);
+        if (uri != null && uri.scheme == 'https') {
+          final requestHeaders = {
+            'User-Agent': 'ua.kyiv.alert.monitor/1.2',
+            ...key.headers,
+          };
+          final response = await _sharedClient
+              .get(uri, headers: requestHeaders)
+              .timeout(const Duration(seconds: 6));
 
-        if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
-          imageBytes = response.bodyBytes;
-          if (tileFile != null) {
-            final f = tileFile;
-            final bytesToSave = response.bodyBytes;
-            Future.microtask(() async {
-              try {
-                if (!await f.parent.exists()) {
-                  await f.parent.create(recursive: true);
-                }
-                await f.writeAsBytes(bytesToSave, flush: true);
-              } catch (_) {}
-            });
+          if (response.statusCode == 200 && _isValidPng(response.bodyBytes)) {
+            imageBytes = response.bodyBytes;
+            if (tileFile != null) {
+              final f = tileFile;
+              final bytesToSave = response.bodyBytes;
+              Future.microtask(() async {
+                try {
+                  if (!await f.parent.exists()) {
+                    await f.parent.create(recursive: true);
+                  }
+                  await f.writeAsBytes(bytesToSave, flush: true);
+                } catch (_) {}
+              });
+            }
           }
         }
       } catch (_) {
@@ -124,7 +152,10 @@ class CachedTileImageProvider extends ImageProvider<CachedTileImageProvider> {
     if ((imageBytes == null || imageBytes.isEmpty) && tileFile != null) {
       try {
         if (await tileFile.exists()) {
-          imageBytes = await tileFile.readAsBytes();
+          final diskBytes = await tileFile.readAsBytes();
+          if (_isValidPng(diskBytes)) {
+            imageBytes = diskBytes;
+          }
         }
       } catch (_) {}
     }

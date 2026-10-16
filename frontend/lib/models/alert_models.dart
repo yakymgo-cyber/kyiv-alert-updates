@@ -2,8 +2,8 @@ import 'dart:math' as math;
 import 'package:latlong2/latlong.dart';
 
 /// Базові константи версії додатку за замовчуванням
-const int kDefaultVersionCode = 38;
-const String kDefaultVersionName = '1.2.35';
+const int kDefaultVersionCode = 39;
+const String kDefaultVersionName = '1.2.36';
 
 /// Модель зони спостереження (Зона безпеки)
 class WatchedLocation {
@@ -52,12 +52,27 @@ class WatchedLocation {
   };
 
   factory WatchedLocation.fromJson(Map<String, dynamic> json) {
+    final rawId = (json['id'] ?? '').toString().trim();
+    final safeId = rawId.length > 64 ? rawId.substring(0, 64) : (rawId.isEmpty ? 'zone_default' : rawId);
+    final rawName = (json['name'] ?? '').toString().replaceAll(RegExp(r'<[^>]*>'), '').trim();
+    final safeName = rawName.length > 60 ? rawName.substring(0, 60) : (rawName.isEmpty ? 'Зона безпеки' : rawName);
+    final rawAddr = (json['address'] ?? '').toString().replaceAll(RegExp(r'<[^>]*>'), '').trim();
+    final safeAddr = rawAddr.length > 140 ? rawAddr.substring(0, 140) : rawAddr;
+
+    final rawLat = (json['lat'] as num?)?.toDouble() ?? 50.4501;
+    final rawLon = (json['lon'] as num?)?.toDouble() ?? 30.5234;
+    final safeLat = (rawLat.isNaN || rawLat.isInfinite) ? 50.4501 : rawLat.clamp(-90.0, 90.0);
+    final safeLon = (rawLon.isNaN || rawLon.isInfinite) ? 30.5234 : rawLon.clamp(-180.0, 180.0);
+
+    final rawRadius = (json['radiusMeters'] as num?)?.toDouble() ?? 4000.0;
+    final safeRadius = (rawRadius.isNaN || rawRadius.isInfinite) ? 4000.0 : rawRadius.clamp(500.0, 50000.0);
+
     return WatchedLocation(
-      id: json['id'] as String,
-      name: json['name'] as String,
-      address: json['address'] as String? ?? '',
-      point: LatLng((json['lat'] as num).toDouble(), (json['lon'] as num).toDouble()),
-      radiusMeters: (json['radiusMeters'] as num?)?.toDouble() ?? 4000.0,
+      id: safeId,
+      name: safeName,
+      address: safeAddr,
+      point: LatLng(safeLat, safeLon),
+      radiusMeters: safeRadius,
       enabled: json['enabled'] as bool? ?? true,
     );
   }
@@ -85,6 +100,20 @@ class RemoteConfig {
     this.extraClearKeywords = const [],
   });
 
+  static const _trustedApkHosts = {
+    'github.com',
+    'objects.githubusercontent.com',
+    'raw.githubusercontent.com',
+  };
+
+  static bool _isTrustedApkUrl(String url) {
+    if (url.isEmpty || url.length > 512) return false;
+    final uri = Uri.tryParse(url);
+    return uri != null &&
+        uri.scheme == 'https' &&
+        _trustedApkHosts.any((h) => uri.host == h || uri.host.endsWith('.$h'));
+  }
+
   factory RemoteConfig.fromJson(Map<String, dynamic> json) {
     final Map<String, (double, double, String)> locations = {};
     if (json['extra_locations'] is Map) {
@@ -97,7 +126,7 @@ class RemoteConfig {
           final lat = (v['lat'] as num).toDouble();
           final lon = (v['lon'] as num).toDouble();
           // Перевірка географічних меж України / Київської області
-          if (lat >= 48.0 && lat <= 53.0 && lon >= 28.0 && lon <= 34.0) {
+          if (!lat.isNaN && !lon.isNaN && lat >= 48.0 && lat <= 53.0 && lon >= 28.0 && lon <= 34.0) {
             final rawName = (v['name'] ?? k).toString();
             final cleanName = rawName.replaceAll(RegExp(r'<[^>]*>'), '').replaceAll(RegExp(r'[\r\n\t]'), ' ').trim();
             final safeName = cleanName.length > 40 ? cleanName.substring(0, 40) : cleanName;
@@ -129,11 +158,28 @@ class RemoteConfig {
             .toList() ??
         const [];
 
+    final rawVersionName = (json['version_name']?.toString() ?? kDefaultVersionName)
+        .replaceAll(RegExp(r'<[^>]*>'), '')
+        .trim();
+    final safeVersionName = rawVersionName.length > 24
+        ? rawVersionName.substring(0, 24)
+        : (rawVersionName.isEmpty ? kDefaultVersionName : rawVersionName);
+
+    final rawApkUrl = (json['apk_url']?.toString() ?? '').trim();
+    final safeApkUrl = _isTrustedApkUrl(rawApkUrl) ? rawApkUrl : '';
+
+    final rawChangelog = (json['changelog']?.toString() ?? '')
+        .replaceAll(RegExp(r'<[^>]*>'), '')
+        .trim();
+    final safeChangelog = rawChangelog.length > 1500
+        ? rawChangelog.substring(0, 1500)
+        : rawChangelog;
+
     return RemoteConfig(
       versionCode: (json['version_code'] as num?)?.toInt() ?? kDefaultVersionCode,
-      versionName: json['version_name']?.toString() ?? kDefaultVersionName,
-      apkUrl: json['apk_url']?.toString() ?? '',
-      changelog: json['changelog']?.toString() ?? '',
+      versionName: safeVersionName,
+      apkUrl: safeApkUrl,
+      changelog: safeChangelog,
       extraLocations: locations,
       extraChannels: channels,
       extraDangerKeywords: dangerKws,

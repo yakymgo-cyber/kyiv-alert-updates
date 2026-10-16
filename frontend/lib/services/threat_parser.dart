@@ -1407,7 +1407,7 @@ List<LatLng> _generateCirclePolygon(LatLng center, double radiusInMeters) {
     return math.atan2(y, x);
   }
 
-  Polygon _buildForecastCone(LatLng currentPos, double bearing, double speedMs, Color color, bool isUav) {
+  Polygon _buildForecastCone(LatLng currentPos, double bearing, double speedMs, Color color, bool isUav, {double opacity = 1.0}) {
     final double coneDistMeters = (speedMs * 150.0).clamp(1500.0, isUav ? 8000.0 : 25000.0);
     const double halfAngleRad = 16.0 * math.pi / 180.0;
     const double earthRadius = 6378137.0;
@@ -1416,7 +1416,7 @@ List<LatLng> _generateCirclePolygon(LatLng center, double radiusInMeters) {
     final double lon1 = currentPos.longitude * math.pi / 180.0;
 
     final List<LatLng> conePoints = [currentPos];
-    const int arcSegments = 8;
+    const int arcSegments = 12;
     for (int s = 0; s <= arcSegments; s++) {
       final double relAngle = -halfAngleRad + (2.0 * halfAngleRad * s / arcSegments);
       final double b = bearing + relAngle;
@@ -1426,25 +1426,36 @@ List<LatLng> _generateCirclePolygon(LatLng center, double radiusInMeters) {
     }
     conePoints.add(currentPos);
 
+    final double safeOpacity = opacity.clamp(0.15, 1.0);
     return Polygon(
       points: conePoints,
-      color: color.withValues(alpha: 0.10),
-      borderColor: color.withValues(alpha: 0.35),
+      color: color.withValues(alpha: 0.10 * safeOpacity),
+      borderColor: color.withValues(alpha: 0.35 * safeOpacity),
       borderStrokeWidth: 1.0,
     );
   }
 
-  (LatLng, double) _calculateCirclingPosAndAngle(LatLng center, double timeSec) {
+  (LatLng, double) _calculateCirclingPosAndAngle(
+    LatLng center,
+    double timeSec, {
+    double phaseOffset = 0.0,
+    double radiusScale = 1.0,
+    bool clockwise = true,
+  }) {
     const double iconRotationOffset = math.pi / 4; // Іконки дивляться праворуч-вгору (45°)
-    final double omega = 2.0 * math.pi / 25.0; // Повний оберт за 25 секунд
-    final double angle = omega * (timeSec % 25.0);
+    final double periodSec = (25.0 * radiusScale.clamp(0.4, 1.5));
+    final double omega = (2.0 * math.pi / periodSec) * (clockwise ? 1.0 : -1.0);
+    final double angle = omega * timeSec + phaseOffset;
 
-    // Радіус орбіти: ~2.5 км (0.016 lat, 0.026 lon)
-    final double lat = center.latitude + 0.016 * math.sin(angle);
-    final double lon = center.longitude + 0.026 * math.cos(angle);
+    // Базовий радіус орбіти: ~2.2 км (0.015 lat, 0.024 lon), масштабується за radiusScale
+    final double rLat = 0.015 * radiusScale;
+    final double rLon = 0.024 * radiusScale;
+    final double lat = center.latitude + rLat * math.sin(angle);
+    final double lon = center.longitude + rLon * math.cos(angle);
 
-    final double dyScreen = -0.016 * math.cos(angle);
-    final double dxScreen = -0.026 * math.sin(angle);
+    final double dirSign = clockwise ? 1.0 : -1.0;
+    final double dyScreen = -rLat * math.cos(angle) * dirSign;
+    final double dxScreen = -rLon * math.sin(angle) * dirSign;
     final double dxCorrected = math.cos(math.pi / 180.0 * center.latitude) * dxScreen;
     final double angleRad = math.atan2(dyScreen, dxCorrected);
 
@@ -1500,8 +1511,8 @@ Map<String, dynamic> analyzeLocalThreat(String text, {int? altitudeMeters, int? 
 String getSeverityForMessage(String text) => _categorizeLocalMessage(text);
 String categorizeLocalMessage(String text) => _categorizeLocalMessage(text);
 double calculateBearing(LatLng from, LatLng to) => _calculateBearing(from, to);
-Polygon buildForecastCone(LatLng currentPos, double bearing, double speedMs, Color color, bool isUav) => _buildForecastCone(currentPos, bearing, speedMs, color, isUav);
-(LatLng, double) calculateCirclingPosAndAngle(LatLng center, double timeSec) => _calculateCirclingPosAndAngle(center, timeSec);
+Polygon buildForecastCone(LatLng currentPos, double bearing, double speedMs, Color color, bool isUav, {double opacity = 1.0}) => _buildForecastCone(currentPos, bearing, speedMs, color, isUav, opacity: opacity);
+(LatLng, double) calculateCirclingPosAndAngle(LatLng center, double timeSec, {double phaseOffset = 0.0, double radiusScale = 1.0, bool clockwise = true}) => _calculateCirclingPosAndAngle(center, timeSec, phaseOffset: phaseOffset, radiusScale: radiusScale, clockwise: clockwise);
 (LatLng, double) interpolatePosAndAngle(List<LatLng> path, double fraction) => _interpolatePosAndAngle(path, fraction);
 double projectedForwardDistance(LatLng locPoint, LatLng pPrev, LatLng pLast, double maxDistanceMeters) => _projectedForwardDistance(locPoint, pPrev, pLast, maxDistanceMeters);
 String formatEta(double distanceMeters, double speedMs) => _formatEta(distanceMeters, speedMs);
