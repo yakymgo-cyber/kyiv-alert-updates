@@ -1,8 +1,8 @@
 {
-  "version_code": 40,
-  "version_name": "1.2.37",
-  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.37/app-release.apk",
-  "changelog": "Аналіз масованої атаки 15–16.10: +85 нових локацій Києва та області, розумне склеювання маршрутів без зигзагів, градієнтні треки зі стрілками напрямку, очищено хибні локації",
+  "version_code": 41,
+  "version_name": "1.2.38",
+  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.38/app-release.apk",
+  "changelog": "Виправлено банер оновлення, що не зникав після встановлення. Аналіз атаки 15–16.10: +85 локацій, розумне склеювання маршрутів, градієнтні треки зі стрілками напрямку",
   "extra_locations": {
     "новосілки": {
       "lat": 50.3547,
