@@ -2281,7 +2281,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                 } catch (_) {}
                               }
 
-                              final rawMsgText = (msg['text'] ?? '').toString();
+                              final rawMsgText = (msg['text'] ?? '')
+                                  .toString()
+                                  .replaceAll(RegExp(r'[\u02BC\u2019\u2018\u02B9\u00B4]'), "'");
                               final msgTextLower = rawMsgText.toLowerCase();
 
                               final bool hasExplicitDroneInMsg = msgTextLower.contains('шахед') ||
@@ -2379,10 +2381,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                               final bool isNegatedClear = msgTextLower.contains('не мінус') ||
                                   msgTextLower.contains('не зник') ||
-                                  msgTextLower.contains('не збито');
+                                  msgTextLower.contains('не збито') ||
+                                  msgTextLower.contains('не впав');
 
-                              // Якщо повідомлено про збиття конкретної цілі ("немає його, збиття, холодні ноги") —
-                              // помічаємо як збиту/втрачену на 25 секунд
+                              // Якщо повідомлено про збиття конкретної цілі ("немає його, збиття, холодні ноги, впав, сконав") —
+                              // помічаємо як збиту/втрачену на 35 секунд
                               final bool isDestroyedMsg = !isNegatedClear && (
                                   msgTextLower.contains('немає його') ||
                                   msgTextLower.contains('нема його') ||
@@ -2394,9 +2397,15 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   msgTextLower.contains('холодні ноги') ||
                                   msgTextLower.contains('👣') ||
                                   msgTextLower.contains('здох') ||
+                                  msgTextLower.contains('сконав') ||
+                                  msgTextLower.contains('впав') ||
+                                  msgTextLower.contains('в\'єбало') ||
+                                  msgTextLower.contains('вєбало') ||
                                   msgTextLower.contains('все він') ||
+                                  msgTextLower.contains('він все') ||
                                   msgTextLower.contains('все походу') ||
                                   msgTextLower.contains('все наче') ||
+                                  msgTextLower.contains('наче все') ||
                                   msgTextLower.contains('ніби все') ||
                                   msgTextLower.contains('ушов назад') ||
                                   msgTextLower.contains('втрачено над') ||
@@ -2988,11 +2997,82 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   final mergedPostIds = (msg['merged_post_ids'] as List?)?.map((p) => normPost(p)).whereType<String>().toList() ?? [];
 
                                   bool mergedIntoExisting = false;
+                                  final bool isNewDirectional = (t['isDirectional'] == true) && path.length == 1;
+
+                                  void applySmartWaypointAppend(Map<String, dynamic> target, DateTime updateTime) {
+                                    final existingWaypoints = (target['waypoints'] as List<LatLng>?) ??
+                                        List<LatLng>.from((target['path'] as List<LatLng>?) ?? []);
+                                    final existingNames = (target['locNames'] as List<String>?) ?? [];
+                                    final prevTime = (target['lastUpdated'] as DateTime?) ?? updateTime;
+                                    final double dtSec = updateTime.difference(prevTime).inSeconds.abs().toDouble();
+                                    final double spdKmh = (target['speed'] as num?)?.toDouble() ?? 185.0;
+                                    final double spdMs = spdKmh * (1000.0 / 3600.0);
+
+                                    // Якщо попередня точка була прогнозним вектором ("На Гатне", "На Коцюбу"),
+                                    // але нова точка прийшла раніше, ніж ціль фізично долетіла туди, і курс змінився —
+                                    // прибираємо або замінюємо недосягнуту прогнозну точку, щоб не малювати хибний зигзаг!
+                                    if (target['hasPendingTarget'] == true && existingWaypoints.length >= 2 && path.isNotEmpty) {
+                                      final prevConfirmedPt = existingWaypoints[existingWaypoints.length - 2];
+                                      final pendingPt = existingWaypoints.last;
+                                      final newPt = path.first;
+                                      final double legDistM = const Distance().as(LengthUnit.Meter, prevConfirmedPt, pendingPt);
+                                      final double flownM = spdMs * dtSec;
+                                      final double progress = legDistM > 80.0 ? (flownM / legDistM) : 1.0;
+
+                                      final double v1Lat = pendingPt.latitude - prevConfirmedPt.latitude;
+                                      final double v1Lon = pendingPt.longitude - prevConfirmedPt.longitude;
+                                      final double v2Lat = newPt.latitude - pendingPt.latitude;
+                                      final double v2Lon = newPt.longitude - pendingPt.longitude;
+                                      final double dot = v1Lat * v2Lat + v1Lon * v2Lon;
+                                      final double distPrevToNew = const Distance().as(LengthUnit.Meter, prevConfirmedPt, newPt);
+
+                                      if (progress < 0.65 && (dot < 0.0 || distPrevToNew < legDistM * 0.92)) {
+                                        if (progress >= 0.18 && flownM >= 450.0) {
+                                          final double clampedP = progress.clamp(0.18, 0.55);
+                                          existingWaypoints[existingWaypoints.length - 1] = LatLng(
+                                            prevConfirmedPt.latitude + v1Lat * clampedP,
+                                            prevConfirmedPt.longitude + v1Lon * clampedP,
+                                          );
+                                        } else {
+                                          existingWaypoints.removeLast();
+                                        }
+                                        if (existingNames.length >= 2) {
+                                          existingNames.removeLast();
+                                        }
+                                      }
+                                    }
+
+                                    bool pointAdded = false;
+                                    for (int k = 0; k < path.length; k++) {
+                                      final pt = path[k];
+                                      final d = existingWaypoints.isEmpty
+                                          ? 999999.0
+                                          : const Distance().as(LengthUnit.Meter, existingWaypoints.last, pt);
+                                      if (d > 350.0) {
+                                        existingWaypoints.add(pt);
+                                        pointAdded = true;
+                                        if (k < locNames.length && (existingNames.isEmpty || existingNames.last != locNames[k])) {
+                                          existingNames.add(locNames[k]);
+                                        }
+                                      }
+                                    }
+                                    target['waypoints'] = existingWaypoints;
+                                    target['path'] = existingWaypoints.length >= 2
+                                        ? [existingWaypoints[existingWaypoints.length - 2], existingWaypoints.last]
+                                        : List<LatLng>.from(existingWaypoints);
+                                    target['locNames'] = existingNames;
+                                    target['route'] = existingNames.isNotEmpty ? existingNames.join(' → ') : target['route'];
+                                    target['hasPendingTarget'] = isNewDirectional;
+                                    if (pointAdded) {
+                                      target['lastUpdated'] = updateTime;
+                                    }
+                                  }
 
                                   // 1. Пріоритет 1: Telegram Reply (replyToPostId або replyToId)
                                   final bool hasExplicitReply = replyToPostId != null || replyToId != null;
                                   if (hasExplicitReply && threats.isNotEmpty) {
                                     for (var existing in threats) {
+                                      if (existing['isDestroyed'] == true) continue;
                                       final lastPostId = normPost(existing['lastPostId']);
                                       final histPosts = existing['historyPostIds'] as Set<dynamic>?;
                                       final normHistPosts = histPosts?.map((p) => normPost(p)).whereType<String>().toSet();
@@ -3007,26 +3087,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                            (histMsgIds != null && (histMsgIds.contains(replyToId) || mergedMsgIds.any((mid) => histMsgIds.contains(mid)))));
 
                                       if (matchPost || matchId) {
-                                        final existingWaypoints = (existing['waypoints'] as List<LatLng>?) ??
-                                            List<LatLng>.from((existing['path'] as List<LatLng>?) ?? []);
-                                        for (final pt in path) {
-                                          if (existingWaypoints.isEmpty || const Distance().as(LengthUnit.Meter, existingWaypoints.last, pt) > 300) {
-                                            existingWaypoints.add(pt);
-                                          }
-                                        }
-                                        existing['waypoints'] = existingWaypoints;
-                                        existing['path'] = existingWaypoints.length >= 2
-                                            ? [existingWaypoints[existingWaypoints.length - 2], existingWaypoints.last]
-                                            : List<LatLng>.from(existingWaypoints);
-
-                                        final existingNames = (existing['locNames'] as List<String>?) ?? [];
-                                        for (final name in locNames) {
-                                          if (existingNames.isEmpty || existingNames.last != name) {
-                                            existingNames.add(name);
-                                          }
-                                        }
-                                        existing['locNames'] = existingNames;
-                                        existing['route'] = existingNames.isNotEmpty ? existingNames.join(' → ') : existing['route'];
+                                        applySmartWaypointAppend(existing, msgTime);
                                         if (isExitingOblast) {
                                           if (existing['route'] != null && !existing['route'].toString().contains('(Вихід з області)')) {
                                             existing['route'] = '${existing['route']} (Вихід з області)';
@@ -3114,10 +3175,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   if (!mergedIntoExisting) {
                                     if (path.isNotEmpty) {
                                       for (var existing in threats) {
+                                        if (existing['isDestroyed'] == true) continue;
                                         final existingPath = (existing['path'] as List<LatLng>?) ?? [];
                                         if (existingPath.isEmpty) {
                                           existing['path'] = List<LatLng>.from(path);
                                           existing['waypoints'] = List<LatLng>.from(path);
+                                          existing['hasPendingTarget'] = isNewDirectional;
                                           String effectiveRoute = (t['route'] ?? '').toString();
                                           if (isExitingOblast && !effectiveRoute.contains('(Вихід з області)')) {
                                             effectiveRoute = effectiveRoute.isEmpty ? 'Вихід з області' : '$effectiveRoute (Вихід з області)';
@@ -3175,7 +3238,11 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     }
 
                                     if (!mergedIntoExisting) {
+                                      Map<String, dynamic>? bestCandidate;
+                                      double bestCandidateScore = double.infinity;
+
                                       for (var existing in threats) {
+                                        if (existing['isDestroyed'] == true) continue;
                                         final existingType = (existing['type'] ?? '').toString();
                                         final bool existingIsMissile = existingType.contains('missile') ||
                                             existingType.contains('ballistic') ||
@@ -3194,7 +3261,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                                         final existingPath = (existing['path'] as List<LatLng>?) ?? [];
                                         if (existingPath.isEmpty) continue;
-                                        final existingNames = (existing['locNames'] as List<String>?) ?? [];
+                                        final existingWaypoints = (existing['waypoints'] as List<LatLng>?) ?? existingPath;
                                         final existingTime = (existing['lastUpdated'] as DateTime?) ?? msgTime;
                                         final double timeDiffSeconds = msgTime.difference(existingTime).inSeconds.abs().toDouble();
 
@@ -3243,10 +3310,24 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         }
 
                                         final double distFromExtrapolatedMeters = const Distance().as(LengthUnit.Meter, currentExtrapolatedPos, path.first);
+                                        final double distFromLastPtMeters = const Distance().as(LengthUnit.Meter, existingPath.last, path.first);
+                                        double distFromPrevConfirmedMeters = distFromLastPtMeters;
+                                        if (existing['hasPendingTarget'] == true && existingWaypoints.length >= 2) {
+                                          distFromPrevConfirmedMeters = const Distance().as(
+                                            LengthUnit.Meter,
+                                            existingWaypoints[existingWaypoints.length - 2],
+                                            path.first,
+                                          );
+                                        }
+                                        // Враховуємо мінімальну дистанцію між екстрапольованою точкою та останнім підтвердженим орієнтиром,
+                                        // щоб розвороти на 90°-180° не розривали маршрут на кілька окремих іконок!
+                                        final double effectiveStitchDistMeters = math.min(
+                                          distFromExtrapolatedMeters,
+                                          math.min(distFromLastPtMeters, distFromPrevConfirmedMeters),
+                                        );
 
                                         if (path.length >= 2) {
-                                          final double distFromCurrentPos = const Distance().as(LengthUnit.Meter, currentExtrapolatedPos, path.first);
-                                          if (distFromCurrentPos > 7000.0) {
+                                          if (effectiveStitchDistMeters > 7000.0) {
                                             continue; // Окремий вектор >= 2 точок за межами 7 км не склеюємо!
                                           }
                                         }
@@ -3257,7 +3338,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         final bool isSameChannel = (existingChannel != null && msgChannel != null && existingChannel == msgChannel);
                                         final bool isCrossChannelDuplicate = (existingChannel != null && msgChannel != null && !isSameChannel) &&
                                             timeDiffSeconds <= 90.0 &&
-                                            distFromExtrapolatedMeters <= 5000.0;
+                                            effectiveStitchDistMeters <= 5000.0;
 
                                         if (isCrossChannelDuplicate) {
                                           existing['msgId'] = msg['id'];
@@ -3285,19 +3366,19 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                                         final bool isSequentialSameChannelSinglePoint = isSameChannel &&
                                             path.length == 1 &&
-                                            timeDiffSeconds <= 60.0 &&
+                                            timeDiffSeconds <= 180.0 &&
                                             !hasMultiTargetMarker;
 
                                         if (!isAnyMissile && !isJetThreat) {
-                                          if (distFromExtrapolatedMeters > (isSequentialSameChannelSinglePoint ? 14000.0 : 22000.0)) {
+                                          if (effectiveStitchDistMeters > (isSequentialSameChannelSinglePoint ? 16000.0 : 22000.0)) {
                                             continue;
                                           }
                                         } else if (isJetThreat) {
-                                          if (distFromExtrapolatedMeters > 65000.0) {
+                                          if (effectiveStitchDistMeters > 65000.0) {
                                             continue;
                                           }
                                         } else {
-                                          if (distFromExtrapolatedMeters > 90000.0) {
+                                          if (effectiveStitchDistMeters > 90000.0) {
                                             continue;
                                           }
                                         }
@@ -3308,15 +3389,37 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                             ? (effSpeed * timeDiffHours * 1.2).clamp(10.0, 90.0)
                                             : (isJetThreat
                                                 ? (effSpeed * timeDiffHours * 1.6).clamp(10.0, 65.0)
-                                                : (effSpeed * timeDiffHours * 1.4).clamp(4.0, 22.0));
+                                                : (effSpeed * timeDiffHours * 1.4).clamp(4.5, 22.0));
                                         if (isSequentialSameChannelSinglePoint) {
-                                          maxAllowedKm = math.max(maxAllowedKm, 14.0);
-                                        } else if (!isAnyMissile && !isJetThreat && path.length == 1 && timeDiffSeconds <= 120.0) {
-                                          maxAllowedKm = math.min(maxAllowedKm, 6.5);
+                                          maxAllowedKm = math.max(maxAllowedKm, 15.0);
+                                        } else if (!isAnyMissile && !isJetThreat && !isSameChannel && path.length == 1 && timeDiffSeconds <= 120.0) {
+                                          maxAllowedKm = math.min(maxAllowedKm, 8.5);
                                         }
-                                        if (distFromExtrapolatedMeters > maxAllowedKm * 1000.0) {
+                                        if (effectiveStitchDistMeters > maxAllowedKm * 1000.0) {
                                           continue;
                                         }
+
+                                        final double candidateScore = effectiveStitchDistMeters +
+                                            (timeDiffSeconds * 12.0) -
+                                            (isSameChannel ? 5000.0 : 0.0) -
+                                            (isSameChannel && timeDiffSeconds <= 90.0 ? 3000.0 : 0.0);
+                                        if (candidateScore < bestCandidateScore) {
+                                          bestCandidateScore = candidateScore;
+                                          bestCandidate = existing;
+                                        }
+                                      }
+
+                                      if (!mergedIntoExisting && bestCandidate != null) {
+                                        final existing = bestCandidate;
+                                        final existingType = (existing['type'] ?? '').toString();
+                                        final bool existingIsMissile = existingType.contains('missile') ||
+                                            existingType.contains('ballistic') ||
+                                            existingType.contains('hypersonic') ||
+                                            existingType.contains('cruise') ||
+                                            existingType.contains('supersonic') ||
+                                            existingType == 'kab';
+                                        final bool isAnyMissile = isMissileThreat || existingIsMissile || activeBallisticOrMissileContext;
+                                        final bool isJetThreat = (existingType == 'shahed_jet' || rawType == 'shahed_jet');
 
                                         if (isAnyMissile) {
                                           if (existing['type'] != 'missile_hypersonic' && existing['type'] != 'missile_cruise') {
@@ -3334,35 +3437,14 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           existing['speed'] = (t['speed'] as num).toDouble();
                                         }
 
-                                        final existingWaypoints = (existing['waypoints'] as List<LatLng>?) ?? List<LatLng>.from(existingPath);
-                                        bool pointAdded = false;
-                                        for (int k = 0; k < path.length; k++) {
-                                          final pt = path[k];
-                                          final d = const Distance().as(LengthUnit.Meter, existingWaypoints.last, pt);
-                                          if (d > 400) {
-                                            existingWaypoints.add(pt);
-                                            pointAdded = true;
-                                            if (k < locNames.length && (existingNames.isEmpty || existingNames.last != locNames[k])) {
-                                              existingNames.add(locNames[k]);
-                                            }
-                                          }
-                                        }
-                                        existing['waypoints'] = existingWaypoints;
-                                        if (existingWaypoints.length >= 2) {
-                                          existing['path'] = [existingWaypoints[existingWaypoints.length - 2], existingWaypoints.last];
-                                        }
+                                        applySmartWaypointAppend(existing, msgTime);
 
-                                        existing['locNames'] = existingNames;
-                                        existing['route'] = existingNames.isNotEmpty ? existingNames.join(' → ') : existing['route'];
                                         if (isExitingOblast) {
                                           if (existing['route'] != null && !existing['route'].toString().contains('(Вихід з області)')) {
                                             existing['route'] = '${existing['route']} (Вихід з області)';
                                           }
                                           existing['isExitingOblast'] = true;
                                           existing['ttl'] = 45;
-                                        }
-                                        if (pointAdded) {
-                                          existing['lastUpdated'] = msgTime;
                                         }
                                         existing['text'] = msgTextLower;
                                         existing['rawText'] = msg['text']?.toString() ?? '';
@@ -3390,7 +3472,6 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                         if (t['isDescending'] == true) existing['isDescending'] = true;
                                         if (t['orderTag'] != null) existing['orderTag'] ??= t['orderTag'];
                                         mergedIntoExisting = true;
-                                        break;
                                       }
                                     }
                                   }
@@ -3411,6 +3492,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       'orderTag': t['orderTag'],
                                       'path': path,
                                       'waypoints': List<LatLng>.from(path),
+                                      'hasPendingTarget': isNewDirectional,
                                       'lastPostId': msgPostId,
                                       'historyPostIds': <dynamic>{?msgPostId},
                                       'lastUpdated': msgTime,
@@ -3428,7 +3510,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   }
                                 }
                               } else {
-                                // Повідомлення без локацій: прив'язка одиночних повідомлень висоти / зниження до останньої активної цілі
+                                // Повідомлення без локацій: прив'язка одиночних повідомлень висоти / зниження / скасування курсу ("Ні") до останньої активної цілі
                                 final text = msg['text']?.toString() ?? '';
                                 final alt = ref.read(messagesProvider.notifier).extractAltitude(text);
                                 final speed = ref.read(messagesProvider.notifier).extractSpeed(text);
@@ -3447,11 +3529,19 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     msgTextLower.contains('нарізає') ||
                                     msgTextLower.contains('накручу') ||
                                     msgTextLower.contains('круги');
+                                final bool isCourseCancelKeyword = RegExp(
+                                  r'^(?:ні|нє|ніт|відміна|не туди|повернув|розвернувся|звернув|змінив курс|крутить назад)[!.,\s]*$',
+                                  caseSensitive: false,
+                                ).hasMatch(msgTextLower.trim());
+                                final bool isExitOblastKeyword = RegExp(
+                                  r'^(?:вийшли|вийшов|інші вийшли|покинув область|вийшли з області|вийшов з області)[!.,\s]*$',
+                                  caseSensitive: false,
+                                ).hasMatch(msgTextLower.trim());
                                 final replyToId = msg['reply_to_msg_id'] ?? msg['replyToId'];
                                 final replyToPostId = normPost(msg['reply_to_post_id'] ?? msg['replyToPostId']);
                                 final bool hasExplicitReply = replyToPostId != null || replyToId != null;
 
-                                if (alt != null || speed != null || isCirclingKeyword || isDescKeyword || hasExplicitReply) {
+                                if (alt != null || speed != null || isCirclingKeyword || isDescKeyword || isCourseCancelKeyword || isExitOblastKeyword || hasExplicitReply) {
                                     if (alt != null) {
                                       activeBallisticOrMissileContext = false;
                                     }
@@ -3464,6 +3554,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     if (replyToPostId != null || replyToId != null) {
                                       for (int ti = threats.length - 1; ti >= 0; ti--) {
                                         final candidate = threats[ti];
+                                        if (candidate['isDestroyed'] == true) continue;
                                         final lastPostId = normPost(candidate['lastPostId']);
                                         final histPosts = candidate['historyPostIds'] as Set<dynamic>?;
                                         final normHistPosts = histPosts?.map((p) => normPost(p)).whereType<String>().toSet();
@@ -3486,22 +3577,23 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   final msgChannel = msg['channel'];
                                   if (targetThreat == null) {
                                     for (int ti = threats.length - 1; ti >= 0; ti--) {
-                                    final candidate = threats[ti];
-                                    if (msgChannel != null && candidate['channel'] != null && candidate['channel'] != msgChannel) {
-                                      continue;
+                                      final candidate = threats[ti];
+                                      if (candidate['isDestroyed'] == true) continue;
+                                      if (msgChannel != null && candidate['channel'] != null && candidate['channel'] != msgChannel) {
+                                        continue;
+                                      }
+                                      final candTime = candidate['lastUpdated'] as DateTime?;
+                                      if (candTime != null && msgTime.difference(candTime).inMinutes.abs() <= 3) {
+                                        targetThreat = candidate;
+                                        break;
+                                      }
                                     }
-                                    final candTime = candidate['lastUpdated'] as DateTime?;
-                                    if (candTime != null && msgTime.difference(candTime).inMinutes.abs() <= 3) {
-                                      targetThreat = candidate;
-                                      break;
-                                    }
-                                  }
-
                                   }
 
                                   if (targetThreat == null && threats.isNotEmpty) {
                                     for (int ti = threats.length - 1; ti >= 0; ti--) {
                                       final candidate = threats[ti];
+                                      if (candidate['isDestroyed'] == true) continue;
                                       final candTime = candidate['lastUpdated'] as DateTime?;
                                       if (candTime != null && msgTime.difference(candTime).inMinutes.abs() <= 3) {
                                         targetThreat = candidate;
@@ -3511,6 +3603,30 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   }
 
                                   if (targetThreat != null) {
+                                    if (isCourseCancelKeyword && targetThreat['hasPendingTarget'] == true) {
+                                      final wp = (targetThreat['waypoints'] as List<LatLng>?) ?? [];
+                                      final ln = (targetThreat['locNames'] as List<String>?) ?? [];
+                                      if (wp.length >= 2) {
+                                        wp.removeLast();
+                                        targetThreat['waypoints'] = wp;
+                                        targetThreat['path'] = wp.length >= 2
+                                            ? [wp[wp.length - 2], wp.last]
+                                            : List<LatLng>.from(wp);
+                                      }
+                                      if (ln.length >= 2) {
+                                        ln.removeLast();
+                                        targetThreat['locNames'] = ln;
+                                        targetThreat['route'] = ln.join(' → ');
+                                      }
+                                      targetThreat['hasPendingTarget'] = false;
+                                    }
+                                    if (isExitOblastKeyword) {
+                                      targetThreat['isExitingOblast'] = true;
+                                      targetThreat['ttl'] = 45;
+                                      if (targetThreat['route'] != null && !targetThreat['route'].toString().contains('(Вихід з області)')) {
+                                        targetThreat['route'] = '${targetThreat['route']} (Вихід з області)';
+                                      }
+                                    }
                                     if (isCirclingKeyword) {
                                       targetThreat['isCircling'] = true;
                                     }
@@ -6006,10 +6122,20 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
             decayTimeTag = minAgo > 0 ? '$minAgoхв' : '${elapsedSec.round()}с';
           }
 
-          // Лінія маршруту та пройденої траєкторії (waypoints) із двоступеневим загасанням шлейфу
+          // Лінія маршруту та пройденої траєкторії (waypoints) із триступеневим загасанням шлейфу,
+          // напрямними шевронами (›) вздовж відрізків та тактичними плашками поворотних орієнтирів
           final waypoints = (t['waypoints'] as List<LatLng>?) ?? path;
-          final List<LatLng> trailRaw = waypoints.isNotEmpty
-              ? (waypoints.length > 1 ? [...waypoints.sublist(0, waypoints.length - 1), currentPos] : [currentPos])
+          final locNamesList = (t['locNames'] as List?)?.map((e) => e.toString()).toList() ?? const <String>[];
+          // У звичайному режимі обмежуємо шлейф останніми 10 вузлами (щоб довгі 20-точкові петлі не захаращували карту),
+          // а при виділенні (isSelected) показуємо повну історію маршруту від входу в область
+          final int maxTrailNodes = isSelected ? waypoints.length : 10;
+          final int wpStartOffset = waypoints.length > maxTrailNodes ? waypoints.length - maxTrailNodes : 0;
+          final List<LatLng> visibleWaypoints = waypoints.sublist(wpStartOffset);
+
+          final List<LatLng> trailRaw = visibleWaypoints.isNotEmpty
+              ? (visibleWaypoints.length > 1
+                  ? [...visibleWaypoints.sublist(0, visibleWaypoints.length - 1), currentPos]
+                  : [currentPos])
               : (path.length > 6 ? path.sublist(path.length - 6) : path);
           final smoothPoints = _generateCatmullRomSpline(trailRaw);
 
@@ -6045,8 +6171,49 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
                   pattern: StrokePattern.dashed(segments: const [6, 4]),
                 ),
               );
+            } else if (smoothPoints.length >= 9) {
+              // Триступеневий тактичний шлейф:
+              // 1) Давній хвіст (0..35%) — тонкий напівпрозорий пунктир
+              // 2) Середній марш (35..70%) — середній штрих
+              // 3) Свіжий слід за ціллю (70..100%) — яскравий неоновий ореол
+              final int split1 = (smoothPoints.length * 0.35).floor().clamp(1, smoothPoints.length - 3);
+              final int split2 = (smoothPoints.length * 0.70).floor().clamp(split1 + 1, smoothPoints.length - 2);
+              final List<LatLng> ghostSegment = smoothPoints.sublist(0, split1 + 1);
+              final List<LatLng> midSegment = smoothPoints.sublist(split1, split2 + 1);
+              final List<LatLng> recentSegment = smoothPoints.sublist(split2);
+
+              polylines.add(
+                Polyline(
+                  points: ghostSegment,
+                  color: trailColor.withValues(alpha: 0.24 * opacity),
+                  strokeWidth: 1.3,
+                  pattern: StrokePattern.dashed(segments: const [3, 6]),
+                ),
+              );
+              polylines.add(
+                Polyline(
+                  points: midSegment,
+                  color: trailColor.withValues(alpha: 0.54 * opacity),
+                  strokeWidth: 1.9,
+                  pattern: StrokePattern.dashed(segments: const [5, 4]),
+                ),
+              );
+              polylines.add(
+                Polyline(
+                  points: recentSegment,
+                  color: trailColor.withValues(alpha: 0.25 * opacity),
+                  strokeWidth: 5.2,
+                ),
+              );
+              polylines.add(
+                Polyline(
+                  points: recentSegment,
+                  color: trailColor.withValues(alpha: 0.94 * opacity),
+                  strokeWidth: 2.4,
+                  pattern: StrokePattern.dashed(segments: const [6, 4]),
+                ),
+              );
             } else if (smoothPoints.length >= 6) {
-              // Двоступеневий шлейф: старіший хвіст напівпрозорий, свіжий слід — яскравий із неоновим ореолом
               final int splitIdx = (smoothPoints.length * 0.45).floor().clamp(1, smoothPoints.length - 2);
               final List<LatLng> olderSegment = smoothPoints.sublist(0, splitIdx + 1);
               final List<LatLng> recentSegment = smoothPoints.sublist(splitIdx);
@@ -6093,31 +6260,168 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
             }
           }
 
+          // Напрямні шеврони (›) посередині сегментів маршруту для візуального читання складних петель і розворотів
+          if (!isDestroyed && trailRaw.length >= 2) {
+            final int maxChevrons = isSelected ? trailRaw.length - 1 : 4;
+            final int startLeg = math.max(0, (trailRaw.length - 1) - maxChevrons);
+            for (int seg = startLeg; seg < trailRaw.length - 1; seg++) {
+              final LatLng pA = trailRaw[seg];
+              final LatLng pB = trailRaw[seg + 1];
+              final double segDistM = const Distance().as(LengthUnit.Meter, pA, pB);
+              if (segDistM < 1100.0) continue;
+              final LatLng midPt = LatLng(
+                (pA.latitude + pB.latitude) * 0.5,
+                (pA.longitude + pB.longitude) * 0.5,
+              );
+              final double legBearing = _calculateBearing(pA, pB);
+              final double barbLenM = (segDistM * 0.14).clamp(220.0, 680.0);
+              const double barbAngle = 148.0 * math.pi / 180.0;
+              final LatLng leftWing = _projectLatLng(midPt, legBearing + barbAngle, barbLenM);
+              final LatLng rightWing = _projectLatLng(midPt, legBearing - barbAngle, barbLenM);
+              final double legProgress = (seg + 1) / (trailRaw.length - 1);
+              final Color chevColor = isSelected
+                  ? Colors.cyanAccent.withValues(alpha: 0.92)
+                  : trailColor.withValues(alpha: (0.38 + 0.50 * legProgress) * opacity);
+              polylines.add(
+                Polyline(
+                  points: [leftWing, midPt, rightWing],
+                  color: chevColor,
+                  strokeWidth: isSelected ? 2.2 : 1.7,
+                ),
+              );
+            }
+          }
+
           // Лінія до цільової точки маршруту, поки ціль ще летить по відрізку (activeFraction < 1.0)
           if (!isDestroyed && !isCircling && activeFraction < 0.98 && path.length >= 2) {
             polylines.add(
               Polyline(
                 points: [currentPos, path.last],
-                color: trailColor.withValues(alpha: 0.32 * opacity),
-                strokeWidth: 1.3,
+                color: trailColor.withValues(alpha: 0.35 * opacity),
+                strokeWidth: 1.4,
                 pattern: const StrokePattern.dotted(),
               ),
             );
           }
 
-          // Вузлові точки (waypoint dots) на поворотах маршруту
-          if (!isDestroyed && waypoints.length >= 2) {
-            for (int w = 0; w < waypoints.length - 1; w++) {
-              final double wpFade = (w + 1) / waypoints.length;
+          // Вузлові точки (waypoint dots) та тактичні підписи пройдених орієнтирів (breadcrumbs)
+          if (!isDestroyed && visibleWaypoints.length >= 2) {
+            final bool isDenseClusterFollower = clusteredIndices.contains(i) && !leadClusterBadges.containsKey(i);
+            final List<LatLng> labeledPoints = [currentPos];
+
+            for (int w = 0; w < visibleWaypoints.length - 1; w++) {
+              final double wpFade = (w + 1) / visibleWaypoints.length;
+              final LatLng wpPt = visibleWaypoints[w];
               targetCircles.add(
                 CircleMarker(
-                  point: waypoints[w],
-                  radius: 2.8,
-                  color: trailColor.withValues(alpha: (0.35 + 0.40 * wpFade) * opacity),
+                  point: wpPt,
+                  radius: isSelected ? 3.6 : 2.8,
+                  color: isSelected
+                      ? Colors.cyanAccent.withValues(alpha: 0.85)
+                      : trailColor.withValues(alpha: (0.35 + 0.45 * wpFade) * opacity),
                   borderColor: Colors.black87,
                   borderStrokeWidth: 1.0,
                 ),
               );
+
+              // Визначаємо назву вузлової точки з locNamesList (вирівнюючи з кінця списку waypoints)
+              final int globalWpIdx = wpStartOffset + w;
+              final int nameOffset = waypoints.length - locNamesList.length;
+              final int nameIdx = globalWpIdx - nameOffset;
+              final bool shouldShowWpLabel = nameIdx >= 0 &&
+                  nameIdx < locNamesList.length &&
+                  (isSelected
+                      ? (w >= visibleWaypoints.length - 7)
+                      : (!isDenseClusterFollower && w == visibleWaypoints.length - 2 && elapsedSec <= 210));
+
+              if (shouldShowWpLabel) {
+                final String wpName = locNamesList[nameIdx].trim();
+                final bool farEnough = wpName.isNotEmpty &&
+                    labeledPoints.every((lp) => const Distance().as(LengthUnit.Meter, lp, wpPt) >= 1300.0);
+                if (farEnough) {
+                  labeledPoints.add(wpPt);
+                  markers.add(
+                    Marker(
+                      point: wpPt,
+                      width: 110,
+                      height: 20,
+                      child: Center(
+                        child: Opacity(
+                          opacity: (isSelected ? 0.95 : (0.72 * opacity)).clamp(0.0, 1.0),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: const Color(0xCC09131C),
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(
+                                color: (isSelected ? Colors.cyanAccent : trailColor).withValues(alpha: 0.55),
+                                width: 0.7,
+                              ),
+                            ),
+                            child: Text(
+                              wpName,
+                              style: TextStyle(
+                                color: isSelected ? Colors.cyanAccent : Colors.white.withValues(alpha: 0.88),
+                                fontSize: 7.2,
+                                fontWeight: FontWeight.w600,
+                                height: 1.0,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }
+              }
+            }
+
+            // Підпис цільового орієнтира (path.last), якщо ціль ще летить до нього або виділена
+            if (locNamesList.isNotEmpty &&
+                (!isDenseClusterFollower || isSelected) &&
+                (isSelected || (activeFraction < 0.88 && elapsedSec <= 180))) {
+              final LatLng destPt = path.last;
+              final String destName = locNamesList.last.trim();
+              final bool destFarEnough = destName.isNotEmpty &&
+                  labeledPoints.every((lp) => const Distance().as(LengthUnit.Meter, lp, destPt) >= 1300.0);
+              if (destFarEnough) {
+                markers.add(
+                  Marker(
+                    point: destPt,
+                    width: 120,
+                    height: 22,
+                    child: Center(
+                      child: Opacity(
+                        opacity: (isSelected ? 0.98 : (0.82 * opacity)).clamp(0.0, 1.0),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 4.5, vertical: 1.2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xD90A1622),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                              color: (isSelected ? Colors.cyanAccent : trailColor).withValues(alpha: 0.75),
+                              width: 0.85,
+                            ),
+                          ),
+                          child: Text(
+                            '→ $destName',
+                            style: TextStyle(
+                              color: isSelected ? Colors.cyanAccent : trailColor,
+                              fontSize: 7.5,
+                              fontWeight: FontWeight.bold,
+                              height: 1.0,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }
             }
           }
 

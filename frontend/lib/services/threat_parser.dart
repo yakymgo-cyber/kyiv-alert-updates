@@ -112,6 +112,8 @@ String cleanHtmlString(String html, {int maxLength = 600}) {
   });
   // Видаляємо невидимі керівні та zero-width символи (захист від prompt/text injection)
   text = text.replaceAll(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200B-\u200F\uFEFF]'), '');
+  // Нормалізуємо всі варіанти апострофів (iOS/macOS ʼ U+02BC, типографські ’ ‘ ´) до стандартного ASCII '
+  text = text.replaceAll(RegExp(r'[\u02BC\u2019\u2018\u02B9\u00B4]'), "'");
   text = text.replaceAll(RegExp(r'http\S+'), '');
   text = text.replaceAll(RegExp(r'@\w+'), '');
 
@@ -137,7 +139,7 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
   int? _extractSpeed(String text) {
     final tLower = text.toLowerCase();
     final match = RegExp(
-      r'(?:^|[^\wа-яіїєґ])(\d{2,4})\s*(?:км/год|км\\год|швидкість|швидк)(?![а-яіїєґa-z0-9])|(?<![а-яіїєґa-z0-9])(?:швидкість|швидк)\s*[:=-]?\s*(\d{2,4})(?![а-яіїєґa-z0-9])',
+      r'(?:^|[^\wа-яіїєґ])(\d{2,4})\s*(?:км/год|км\\год|швидкість|швидк|шв)(?![а-яіїєґa-z0-9])|(?<![а-яіїєґa-z0-9])(?:швидкість|швидк|шв)\s*[:=-]?\s*(\d{2,4})(?![а-яіїєґa-z0-9])',
       caseSensitive: false,
     ).firstMatch(tLower);
     if (match != null) {
@@ -154,9 +156,9 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
 
   int? _extractAltitude(String text) {
     var tClean = text.toLowerCase();
-    // 1) Видаляємо конструкції швидкості, номери банківських карток та "750" (підстанція ПС 750 / на Бородянку 750)
+    // 1) Видаляємо конструкції швидкості (включно з "459шв"), номери банківських карток та "750" (підстанція ПС 750 / на Бородянку 750)
     tClean = tClean.replaceAll(RegExp(r'\b\d{4}(?:[\s-]+\d{4}){3}\b'), '');
-    tClean = tClean.replaceAll(RegExp(r'(?:^|[^\wа-яіїєґ])(\d{2,4})\s*(?:км/год|км\\год|швидкість|швидк)(?![а-яіїєґa-z0-9])|(?<![а-яіїєґa-z0-9])(?:швидкість|швидк)\s*[:=-]?\s*(\d{2,4})(?![а-яіїєґa-z0-9])', caseSensitive: false), ' ');
+    tClean = tClean.replaceAll(RegExp(r'(?:^|[^\wа-яіїєґ])(\d{2,4})\s*(?:км/год|км\\год|швидкість|швидк|шв)(?![а-яіїєґa-z0-9])|(?<![а-яіїєґa-z0-9])(?:швидкість|швидк|шв)\s*[:=-]?\s*(\d{2,4})(?![а-яіїєґa-z0-9])', caseSensitive: false), ' ');
     tClean = tClean.replaceAll(RegExp(r'(?:або|бородянк[а-яіїєґa-z0-9]*|пс)\s+750(?:\s*кв)?(?![а-яіїєґa-z0-9])', caseSensitive: false), ' ');
     tClean = tClean.replaceAll(RegExp(r'\b750\s*(?:кв|кіловольт)\b', caseSensitive: false), ' ');
 
@@ -274,7 +276,8 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
   }
 
   
-  String _categorizeLocalMessage(String text) {
+  String _categorizeLocalMessage(String rawText) {
+    final text = rawText.replaceAll(RegExp(r'[\u02BC\u2019\u2018\u02B9\u00B4]'), "'");
     final tLower = text.toLowerCase();
     const offtopic = [
       'футбол', 'матч', 'гол', 'рахунок', 'динамо', 'шахтар', 'збірна', 'пенальті', 'розіграш', 'реклама', 'спонсор',
@@ -309,7 +312,10 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
         tLower.contains('за ніч') ||
         tLower.contains('станом на');
 
-    final bool isNegatedClear = tLower.contains('не мінус') || tLower.contains('не зник') || tLower.contains('не збито');
+    final bool isNegatedClear = tLower.contains('не мінус') ||
+        tLower.contains('не зник') ||
+        tLower.contains('не збито') ||
+        tLower.contains('не впав');
 
     if (!isNegatedClear && text.trim().length < 40 &&
         (tLower.contains('знищено') ||
@@ -317,6 +323,12 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
          tLower.contains('збито') ||
          tLower.contains('мінус') ||
          tLower.contains('-1') ||
+         tLower.contains('впав') ||
+         tLower.contains('в\'єбало') ||
+         tLower.contains('вєбало') ||
+         tLower.contains('сконав') ||
+         tLower.contains('він все') ||
+         tLower.contains('наче все') ||
          tLower.contains('все наче') ||
          tLower.contains('ніби все') ||
          tLower.contains('нема його') ||
@@ -333,7 +345,8 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
       'не спостерігається', 'не фіксується', 'немає цілей', 'без фіксаці', 'фіксацій немає',
       'не фіксуються', 'чисте небо', 'попередньо чисто', 'все походу', 'та все, нема', 'нема вже',
       'немає', 'нема', 'зникло', 'зник', 'знив', 'чисто по',
-      'все наче', 'ніби все', 'нема його', '-1', 'ушов назад', 'втрачено над', 'попередньо збили',
+      'все наче', 'наче все', 'ніби все', 'він все', 'нема його', '-1', 'ушов назад',
+      'втрачено над', 'попередньо збили', 'впав', 'сконав', 'в\'єбало', 'вєбало', 'інші вийшли',
     ];
     final bool hasClearKeyword = !isNegatedClear && (clear.any((kw) {
       if (kw == 'безпек') {
@@ -370,7 +383,8 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
   }
 
 
-  List<Map<String, dynamic>> _parseLocalThreats(String text) {
+  List<Map<String, dynamic>> _parseLocalThreats(String rawText) {
+    final text = rawText.replaceAll(RegExp(r'[\u02BC\u2019\u2018\u02B9\u00B4]'), "'");
     final tLower = text.toLowerCase();
 
     // Блокування повітряних тривог інших областей (air_alert_ua хештеги)
@@ -397,7 +411,8 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
       'горішні плавні', 'омельник', 'лихівка', 'жовті води', 'карлівка', 
       'берестин', 'чутове', 'магдалинівк', 'кобеля', 'перещепин', 'долинськ',
       'устинівк', 'широке', 'кривий ріг', 'херсонщин', 'миколаївщин', 'запоріжж',
-      'дніпропетров', 'харківщин', 'сумщин', 'донеччин', 'луганщин', 'одещин'
+      'дніпропетров', 'харківщин', 'сумщин', 'донеччин', 'луганщин', 'одещин',
+      'могилів подільськ', 'могилів-подільськ'
     ];
 
     final bool hasGlobalStopWord = globalDigestStopWords.any((sw) {
@@ -523,14 +538,58 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
           final isWordStart = (idx == 0 || !RegExp(r'[а-яіїєґa-z0-9]').hasMatch(searchLine[idx - 1]));
           if (isWordStart) {
             bool isFalseMatch = false;
+            final afterIdx = idx + key.length;
+            final restOfWord = searchLine.substring(afterIdx, math.min(searchLine.length, afterIdx + 12)).toLowerCase();
             if (key == 'гес' || key == 'гаес') {
-              final afterIdx = idx + key.length;
               if (afterIdx < searchLine.length && RegExp(r'[а-яіїєґa-z0-9]').hasMatch(searchLine[afterIdx])) {
                 isFalseMatch = true;
               }
             } else if (key == 'гора') {
-              final prefix = searchLine.substring(math.max(0, idx - 15), idx).toLowerCase();
-              if (prefix.contains('батиєв') || prefix.contains('черепанов')) {
+              final prefix = searchLine.substring(math.max(0, idx - 18), idx).toLowerCase();
+              if (prefix.contains('батиєв') ||
+                  prefix.contains('черепанов') ||
+                  prefix.contains('багрин') ||
+                  prefix.contains('чорн') ||
+                  prefix.contains('лис') ||
+                  prefix.contains('вітрян') ||
+                  prefix.contains('щекавиц') ||
+                  prefix.contains('замков') ||
+                  prefix.contains('юрковиц') ||
+                  prefix.contains('володимир') ||
+                  prefix.contains('червон')) {
+                isFalseMatch = true;
+              }
+            } else if (key == 'багрин') {
+              if (restOfWord.startsWith('ов')) {
+                // "Багринова гора" / "Багринову гору" — це Голосіїв у Києві, а не с. Багрин!
+                isFalseMatch = true;
+              }
+            } else if (key == 'васильків') {
+              if (restOfWord.startsWith('ськ') && !searchLine.contains('район') && !searchLine.contains('р-н')) {
+                // "Васильківська" (метро у Києві) або "Сергія Васильківського" — не м. Васильків!
+                isFalseMatch = true;
+              }
+            } else if (key == 'поділ') {
+              final prefix = searchLine.substring(math.max(0, idx - 18), idx).toLowerCase();
+              if (restOfWord.startsWith('ьськ') &&
+                  (prefix.contains('могилів') || prefix.contains('кам\'янець') || prefix.contains('камянець'))) {
+                isFalseMatch = true;
+              }
+            } else if (key == 'харківськ') {
+              if ((restOfWord.startsWith('а ') || restOfWord.startsWith('у ') || restOfWord.startsWith('ій ')) &&
+                  !searchLine.contains('площ') &&
+                  !searchLine.contains('шосе') &&
+                  !searchLine.contains('масив')) {
+                // "Харківська багато" (область) без слова масив/площа/шосе
+                isFalseMatch = true;
+              }
+            } else if (key == 'чабан' || key == 'березан') {
+              if (restOfWord.startsWith('к')) {
+                // "Чабанка" (Одещина) або "Березанка" (Миколаївщина)
+                isFalseMatch = true;
+              }
+            } else if (key == 'крим') {
+              if (restOfWord.startsWith('ін') || restOfWord.startsWith('ськ')) {
                 isFalseMatch = true;
               }
             } else if (key == 'море') {
@@ -934,6 +993,21 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
           lineLower.contains('підлітає') ||
           RegExp(r'\b(?:з|від|із)\s+[а-яіїєґa-z0-9\s]+?\s+на\b', caseSensitive: false).hasMatch(lineLower);
 
+      final bool isOverheadFix = lineLower.contains('над ') ||
+          lineLower.contains('біля ') ||
+          lineLower.contains('поблизу ') ||
+          lineLower.contains('в районі') ||
+          lineLower.contains('у районі') ||
+          lineLower.contains('пролітає') ||
+          lineLower.contains('вже на ');
+      final bool isDirectionalSinglePoint = path.length == 1 &&
+          !isCircling &&
+          !isOverheadFix &&
+          RegExp(
+            r'(?:^|[\s,;:])(?:на|в бік|у бік|курсом(?:\s+на)?|курс(?:\s+на)?|вектор(?:ом)?(?:\s+на)?|у напрямку|в напрямку|далі на|повернув на|розвернувся на|звернув на|до)\s+',
+            caseSensitive: false,
+          ).hasMatch(lineLower);
+
       final bool isSeparateTargetsList = !hasTrajectoryIndicators && (hasMultipleDrones || path.length >= 3);
       if (isSeparateTargetsList) {
         for (final loc in path) {
@@ -943,6 +1017,7 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
             'label': effectiveLabel,
             'path': [Map<String, dynamic>.from(loc)],
             'isCircling': isCircling,
+            'isDirectional': isDirectionalSinglePoint,
             'altitude': altitudeStr,
             'altitudeMeters': lineAlt,
             'isDescending': isDescending,
@@ -957,6 +1032,7 @@ String cleanHtmlText(String html, {int maxLength = 600}) => cleanHtmlString(html
             'label': effectiveLabel,
             'path': List<Map<String, dynamic>>.from(path),
             'isCircling': isCircling,
+            'isDirectional': isDirectionalSinglePoint,
             'altitude': altitudeStr,
             'altitudeMeters': lineAlt,
             'isDescending': isDescending,

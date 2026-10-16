@@ -3,7 +3,7 @@ import 'package:latlong2/latlong.dart';
 
 /// Базові константи версії додатку за замовчуванням
 const int kDefaultVersionCode = 39;
-const String kDefaultVersionName = '1.2.36';
+const String kDefaultVersionName = '1.2.37';
 
 /// Модель зони спостереження (Зона безпеки)
 class WatchedLocation {
@@ -106,6 +106,10 @@ class RemoteConfig {
     'raw.githubusercontent.com',
   };
 
+  static const _blockedRemoteLocationKeys = {
+    'києва', 'київ', 'умань', 'залізн', 'десни', 'десна', 'дніпра', 'борщ', 'кло', 'азс',
+  };
+
   static bool _isTrustedApkUrl(String url) {
     if (url.isEmpty || url.length > 512) return false;
     final uri = Uri.tryParse(url);
@@ -121,6 +125,9 @@ class RemoteConfig {
         final keyStr = k.toString().toLowerCase().trim();
         if (keyStr.startsWith('лук\'ян') || keyStr.startsWith('лукʼян') || keyStr.startsWith('лук’ян') || keyStr.startsWith('лукян')) {
           return; // Лук'янівка — виключно метро Лук'янівка (Київ)!
+        }
+        if (_blockedRemoteLocationKeys.contains(keyStr)) {
+          return; // Отруєні ключі (загальні слова/топоніми поза контекстом)
         }
         if (keyStr.length >= 3 && keyStr.length <= 35 && v is Map && v['lat'] != null && v['lon'] != null) {
           final lat = (v['lat'] as num).toDouble();
