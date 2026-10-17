@@ -1,8 +1,8 @@
 {
-  "version_code": 42,
-  "version_name": "1.2.39",
-  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.39/app-release.apk",
-  "changelog": "Фільтр довгих попереджень (>100 символів), TTL шахедів 5 хв, знак питання та відновлення втрачених цілей",
+  "version_code": 43,
+  "version_name": "1.2.40",
+  "apk_url": "https://github.com/yakymgo-cyber/kyiv-alert-updates/releases/download/v1.2.40/app-release.apk",
+  "changelog": "Перепідв'язано кольори тривоги на мапі до офіційних рівнів тривоги (жовтий на БпЛА/Шахеди, червоний на ракети) та додано точні адміністративні межі м. Київ замість кола",
   "extra_locations": {
     "новосілки": {
       "lat": 50.3547,

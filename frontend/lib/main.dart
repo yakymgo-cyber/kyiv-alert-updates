@@ -107,18 +107,23 @@ class KyivAlertApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Kyiv Alert Monitor',
-      scrollBehavior: NoStretchScrollBehavior(), 
+      title: 'Kyiv Alert — Тактичний Радар',
+      debugShowCheckedModeBanner: false,
+      scrollBehavior: NoStretchScrollBehavior(),
       theme: ThemeData.dark(useMaterial3: true).copyWith(
-        scaffoldBackgroundColor: const Color(0xFF121212),
+        scaffoldBackgroundColor: const Color(0xFF0B0E14),
         appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF1E1E1E),
+          backgroundColor: Color(0xFF111622),
+          surfaceTintColor: Colors.transparent,
           elevation: 0,
+          shape: Border(
+            bottom: BorderSide(color: Color(0xFF1F2738), width: 1),
+          ),
         ),
-        cardColor: const Color(0xFF1E1E1E),
+        cardColor: const Color(0xFF151C28),
         snackBarTheme: const SnackBarThemeData(
           contentTextStyle: TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w500),
-          backgroundColor: Color(0xFF262630),
+          backgroundColor: Color(0xFF1C2333),
           behavior: SnackBarBehavior.floating,
         ),
       ),
@@ -141,6 +146,18 @@ class AlertsNotifier extends Notifier<Map<String, bool>> {
   final http.Client _httpClient = http.Client();
   bool _disposed = false;
   bool _isFetching = false;
+  int _cycleCount = 0;
+  final Map<String, bool> _cachedUbillingAlerts = {};
+
+  static const List<String> _kKyivOblastDistricts = [
+    'білоцерківський',
+    'бориспільський',
+    'броварський',
+    'бучанський',
+    'вишгородський',
+    'обухівський',
+    'фастівський',
+  ];
 
   @override
   Map<String, bool> build() {
@@ -163,31 +180,210 @@ class AlertsNotifier extends Notifier<Map<String, bool>> {
 
   Future<void> refreshNow() => _fetchData();
 
-  Future<void> _fetchData() async {
-    if (_disposed || _isFetching) return;
-    _isFetching = true;
+  Future<List<(DateTime, String)>> _fetchTelegramChannelPosts(String channel) async {
     try {
-      final ts = DateTime.now().millisecondsSinceEpoch;
-      final response = await _httpClient.get(
-        Uri.parse('https://ubilling.net.ua/aerialalerts/?_t=$ts'),
+      final dynamicBefore = 90000000 + (DateTime.now().millisecondsSinceEpoch ~/ 1000) % 9000000;
+      final resp = await _httpClient.get(
+        Uri.parse('https://t.me/s/$channel?before=$dynamicBefore'),
         headers: const {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
           'Cache-Control': 'no-cache, no-store, must-revalidate',
           'Pragma': 'no-cache',
         },
-      ).timeout(const Duration(seconds: 5));
-      if (_disposed) return;
-      if (response.statusCode == 200 && response.bodyBytes.length <= 262144) {
-        final data = json.decode(utf8.decode(response.bodyBytes));
-        Map<String, bool> alerts = {};
-        final states = data['states'] as Map<String, dynamic>;
-        states.forEach((key, value) {
-          alerts[key] = value['alertnow'] == true;
-        });
+      ).timeout(const Duration(seconds: 4));
 
-        state = alerts;
-        _scheduleNextFetch(6);
-        return;
+      if (resp.statusCode != 200 || resp.bodyBytes.length > 524288) {
+        return const [];
       }
+      final html = utf8.decode(resp.bodyBytes, allowMalformed: true);
+      final blocks = html.split('tgme_widget_message_wrap');
+      final List<(DateTime, String)> posts = [];
+      final nowUtc = DateTime.now().toUtc();
+
+      for (int i = 1; i < blocks.length; i++) {
+        final b = blocks[i];
+        final timeMatch = RegExp(r'datetime="([^"]+)"').firstMatch(b);
+        final textMatch = RegExp(
+          r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
+          dotAll: true,
+        ).firstMatch(b);
+        if (timeMatch == null || textMatch == null) continue;
+        final dt = DateTime.tryParse(timeMatch.group(1)!)?.toUtc();
+        if (dt == null || nowUtc.difference(dt).inHours > 18) continue;
+
+        final clean = _cleanHtmlText(textMatch.group(1)!, maxLength: 600)
+            .replaceAll(RegExp(r'\s+'), ' ')
+            .trim();
+        if (clean.isNotEmpty) {
+          posts.add((dt, clean));
+        }
+      }
+      return posts;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Отримує офіційний рівень тривоги в м. Київ із каналів КМВА (VA_Kyiv) та КМДА (KyivCityOfficial):
+  /// 1 = Відбій / Немає тривоги, 2 = Жовта тривога (Шахеди/БпЛА), 3 = Червона тривога (Ракети)
+  Future<int?> _fetchOfficialKyivCityLevel() async {
+    final results = await Future.wait([
+      _fetchTelegramChannelPosts('VA_Kyiv'),
+      _fetchTelegramChannelPosts('KyivCityOfficial'),
+    ]);
+
+    final List<(DateTime, int)> events = [];
+    for (final postList in results) {
+      for (final (dt, text) in postList) {
+        final t = text.toLowerCase();
+        // Ігноруємо погодні попередження та тижневі дайджести
+        if (t.contains('протягом цього тижня') ||
+            t.contains('найважливіше за тиждень') ||
+            t.contains('туман') ||
+            t.contains('укргідрометцентр') ||
+            t.contains('рівень небезпечності')) {
+          continue;
+        }
+
+        if (t.contains('відбій повітряної тривоги') ||
+            t.contains('відбій тривоги') ||
+            t.contains('air siren all clear')) {
+          events.add((dt, 1));
+        } else if ((t.contains('червоний рівень') &&
+                (t.contains('тривог') || t.contains('загроз') || t.contains('небезпек'))) ||
+            t.contains('оголошена ракетна загроза') ||
+            t.contains('через ракетну загрозу') ||
+            t.contains('missile threat') ||
+            ((t.contains('оголошено повітряну тривогу') ||
+                    t.contains('повітряна тривога в києві') ||
+                    t.contains('повітряна тривога у києві') ||
+                    t.contains('у києві оголошена повітряна тривога')) &&
+                (t.contains('🔴') ||
+                    t.contains('ракет') ||
+                    t.contains('баліст') ||
+                    t.contains('міг') ||
+                    t.contains('кинджал')))) {
+          events.add((dt, 3));
+        } else if ((t.contains('жовтий рівень') &&
+                (t.contains('тривог') || t.contains('загроз') || t.contains('небезпек'))) ||
+            t.contains('дронова небезпека') ||
+            t.contains('через дронову загрозу') ||
+            t.contains('drone threat') ||
+            t.contains('загроза ударних бпла') ||
+            t.contains('оголошено повітряну тривогу') ||
+            t.contains('повітряна тривога в києві') ||
+            t.contains('повітряна тривога у києві') ||
+            t.contains('у києві оголошена повітряна тривога')) {
+          events.add((dt, 2));
+        }
+      }
+    }
+
+    if (events.isEmpty) return null;
+    events.sort((a, b) => a.$1.compareTo(b.$1));
+    return events.last.$2;
+  }
+
+  /// Отримує офіційний рівень тривоги в Київській області з каналу КОВА (kyivoda):
+  /// 1 = Відбій / Немає тривоги, 2 = Жовта тривога (Шахеди/БпЛА), 3 = Червона тривога (Ракети)
+  Future<int?> _fetchOfficialKyivOblastLevel() async {
+    final posts = await _fetchTelegramChannelPosts('kyivoda');
+    if (posts.isEmpty) return null;
+
+    posts.sort((a, b) => a.$1.compareTo(b.$1));
+    final Map<String, int> districtLevels = {
+      for (final d in _kKyivOblastDistricts) d: 1,
+    };
+    bool hasAnyOfficialEvent = false;
+
+    for (final (_, text) in posts) {
+      final t = text.toLowerCase();
+      if (t.contains('відбій повітряної тривоги')) {
+        hasAnyOfficialEvent = true;
+        if (t.contains('досі триває у:')) {
+          final afterPart = t.split('досі триває у:').last;
+          for (final d in _kKyivOblastDistricts) {
+            districtLevels[d] = afterPart.contains(d) ? 2 : 1;
+          }
+        } else {
+          for (final d in _kKyivOblastDistricts) {
+            districtLevels[d] = 1;
+          }
+        }
+      } else {
+        final headerPart = t.split('—').first;
+        for (final d in _kKyivOblastDistricts) {
+          if (headerPart.contains(d)) {
+            if (t.contains('червоний рівень') || t.contains('ракетна загроза') || t.contains('🔴')) {
+              districtLevels[d] = 3;
+              hasAnyOfficialEvent = true;
+            } else if (t.contains('жовтий рівень') || t.contains('дронова загроза') || t.contains('🟡')) {
+              districtLevels[d] = 2;
+              hasAnyOfficialEvent = true;
+            }
+          }
+        }
+      }
+    }
+
+    if (!hasAnyOfficialEvent) return null;
+    return districtLevels.values.fold<int>(1, math.max);
+  }
+
+  Future<void> _fetchData() async {
+    if (_disposed || _isFetching) return;
+    _isFetching = true;
+    _cycleCount++;
+    try {
+      final bool shouldPollUbilling = _cachedUbillingAlerts.isEmpty || (_cycleCount % 3 == 1);
+
+      final Future<void> ubillingFuture = shouldPollUbilling
+          ? () async {
+              try {
+                final ts = DateTime.now().millisecondsSinceEpoch;
+                final response = await _httpClient.get(
+                  Uri.parse('https://ubilling.net.ua/aerialalerts/?_t=$ts'),
+                  headers: const {
+                    'Cache-Control': 'no-cache, no-store, must-revalidate',
+                    'Pragma': 'no-cache',
+                  },
+                ).timeout(const Duration(seconds: 4));
+                if (response.statusCode == 200 && response.bodyBytes.length <= 262144) {
+                  final data = json.decode(utf8.decode(response.bodyBytes));
+                  final states = data['states'] as Map<String, dynamic>?;
+                  if (states != null) {
+                    states.forEach((key, value) {
+                      _cachedUbillingAlerts[key] = value['alertnow'] == true;
+                    });
+                  }
+                }
+              } catch (_) {}
+            }()
+          : Future.value();
+
+      final results = await Future.wait([
+        _fetchOfficialKyivCityLevel(),
+        _fetchOfficialKyivOblastLevel(),
+        ubillingFuture,
+      ]);
+
+      if (_disposed) return;
+
+      final int? officialCityLevel = results[0] as int?;
+      final int? officialOblastLevel = results[1] as int?;
+
+      final Map<String, bool> alerts = Map<String, bool>.from(_cachedUbillingAlerts);
+
+      if (officialCityLevel != null) {
+        alerts['м. Київ'] = officialCityLevel >= 2;
+        alerts['__red_м. Київ'] = officialCityLevel == 3;
+      }
+      if (officialOblastLevel != null) {
+        alerts['Київська область'] = officialOblastLevel >= 2;
+        alerts['__red_Київська область'] = officialOblastLevel == 3;
+      }
+
+      state = alerts;
     } catch (_) {
     } finally {
       _isFetching = false;
@@ -840,29 +1036,34 @@ final messagesProvider = NotifierProvider<MessagesNotifier, List<dynamic>>(() {
   return MessagesNotifier();
 });
 
-List<LatLng> _generateCirclePolygon(LatLng center, double radiusInMeters) {
-  final List<LatLng> circle = [];
-  const int points = 32;
-  const double earthRadius = 6378137.0;
-  final double lat = center.latitude * math.pi / 180.0;
-  final double lng = center.longitude * math.pi / 180.0;
-  final double d = radiusInMeters / earthRadius;
-
-  for (int i = 0; i <= points; i++) {
-    final double bearing = i * 2 * math.pi / points;
-    final double targetLat = math.asin(math.sin(lat) * math.cos(d) + math.cos(lat) * math.sin(d) * math.cos(bearing));
-    final double targetLng = lng + math.atan2(math.sin(bearing) * math.sin(d) * math.cos(lat), math.cos(d) - math.sin(lat) * math.sin(targetLat));
-    circle.add(LatLng(targetLat * 180.0 / math.pi, targetLng * 180.0 / math.pi));
-  }
-  return circle;
-}
-
 const LatLng kyivCenter = LatLng(50.4501, 30.5234);
-final List<LatLng> _kCachedKyivHole = _generateCirclePolygon(kyivCenter, 18000);
 final Map<String, List<List<LatLng>>> _kCachedRegionPolygons = {};
 
+bool _isPointInKyivCity(LatLng point) {
+  final kyivPolys = _kCachedRegionPolygons['м. Київ'];
+  if (kyivPolys != null && kyivPolys.isNotEmpty) {
+    for (final poly in kyivPolys) {
+      if (poly.length < 3) continue;
+      bool inside = false;
+      for (int i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        final xi = poly[i].longitude, yi = poly[i].latitude;
+        final xj = poly[j].longitude, yj = poly[j].latitude;
+        final intersect = ((yi > point.latitude) != (yj > point.latitude)) &&
+            (point.longitude < (xj - xi) * (point.latitude - yi) / ((yj - yi) == 0 ? 1e-12 : (yj - yi)) + xi);
+        if (intersect) inside = !inside;
+      }
+      if (inside) return true;
+    }
+    return false;
+  }
+  return point.latitude >= 50.2132 &&
+      point.latitude <= 50.5908 &&
+      point.longitude >= 30.2361 &&
+      point.longitude <= 30.8264;
+}
+
 List<Polygon> _buildAlertPolygons(Map<String, dynamic> geoJson, Map<String, bool> alerts, List<Map<String, dynamic>> threats, {bool globalMissileThreat = false}) {
-  // Кешуємо розпарсені координати областей один раз за все життя додатку
+  // Кешуємо розпарсені координати областей та м. Київ один раз за все життя додатку
   if (_kCachedRegionPolygons.isEmpty) {
     final features = geoJson['features'] as List;
     for (var feature in features) {
@@ -893,19 +1094,24 @@ List<Polygon> _buildAlertPolygons(Map<String, dynamic> geoJson, Map<String, bool
   }
 
   final List<Polygon> polygons = [];
-  final List<List<LatLng>>? holeList = (alerts['Київська область'] == true && alerts['м. Київ'] != true)
-      ? [_kCachedKyivHole]
-      : null;
+  final List<List<LatLng>>? kyivCityHole = _kCachedRegionPolygons['м. Київ'];
 
   for (final entry in _kCachedRegionPolygons.entries) {
     final name = entry.key;
     final isAlert = alerts[name] == true;
     final isKyivRegion = (name == 'Київська область');
+    final isKyivCity = (name == 'м. Київ');
 
-    final threatLevel = _getThreatLevel(isAlert, isKyivRegion, threats, globalMissileThreat: globalMissileThreat);
+    final bool isRegionRed = alerts.containsKey('__red_$name')
+        ? (alerts['__red_$name'] == true)
+        : globalMissileThreat;
+
+    final threatLevel = _getThreatLevel(isAlert, isKyivRegion || isKyivCity, threats, globalMissileThreat: isRegionRed);
     final fill = _getAlertFillColor(threatLevel);
-    final border = _getAlertBorderColor(threatLevel);
-    final holes = isKyivRegion ? holeList : null;
+    final border = (isKyivCity && threatLevel == 1)
+        ? Colors.white.withValues(alpha: 0.28)
+        : _getAlertBorderColor(threatLevel);
+    final holes = isKyivRegion ? kyivCityHole : null;
 
     for (final points in entry.value) {
       polygons.add(
@@ -913,7 +1119,7 @@ List<Polygon> _buildAlertPolygons(Map<String, dynamic> geoJson, Map<String, bool
           points: points,
           color: fill,
           borderColor: border,
-          borderStrokeWidth: 1.0,
+          borderStrokeWidth: isKyivCity ? (threatLevel >= 2 ? 1.8 : 1.3) : 1.0,
           holePointsList: holes,
         ),
       );
@@ -1468,24 +1674,36 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
           _feedFilter = filterKey;
         });
       },
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(18),
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: isSelected ? activeColor.withValues(alpha: 0.25) : Colors.white.withValues(alpha: 0.05),
-          borderRadius: BorderRadius.circular(14),
+          color: isSelected
+              ? activeColor.withValues(alpha: 0.22)
+              : const Color(0xFF182030),
+          borderRadius: BorderRadius.circular(18),
           border: Border.all(
-            color: isSelected ? activeColor : Colors.white12,
-            width: isSelected ? 1.2 : 0.8,
+            color: isSelected ? activeColor.withValues(alpha: 0.85) : const Color(0xFF283246),
+            width: isSelected ? 1.3 : 1.0,
           ),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: activeColor.withValues(alpha: 0.22),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ]
+              : null,
         ),
         child: Text(
           label,
           style: TextStyle(
-            color: isSelected ? Colors.white : Colors.white60,
-            fontSize: 11,
-            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+            color: isSelected ? Colors.white : Colors.white70,
+            fontSize: 11.5,
+            letterSpacing: 0.2,
+            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
           ),
         ),
       ),
@@ -1678,7 +1896,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
   void _scheduleWidgetSync(Map<String, bool> alerts, List<Map<String, dynamic>> threats, List<dynamic> messages) {
     if (kIsWeb || !Platform.isAndroid) return;
     final firstId = messages.isNotEmpty ? (messages.first['id'] ?? 0) : 0;
-    final sig = '${alerts["м. Київ"]}_${alerts["Київська область"]}_${threats.length}_$firstId';
+    final sig = '${alerts["м. Київ"]}_${alerts["__red_м. Київ"]}_${alerts["Київська область"]}_${alerts["__red_Київська область"]}_${threats.length}_$firstId';
     if (sig == _lastWidgetSyncSignature) return;
     _lastWidgetSyncSignature = sig;
 
@@ -1706,16 +1924,14 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     final bool kyivCityAlert = alerts['м. Київ'] == true;
     final bool kyivOblastAlert = alerts['Київська область'] == true;
     final bool anyAlert = kyivCityAlert || kyivOblastAlert;
-    final bool hasMissiles = threats.any((t) => t['type'].toString().contains('missile') || t['type'] == 'kab');
-    final bool hasUavs = threats.any((t) => !t['type'].toString().contains('missile') && t['type'] != 'kab');
+    final bool isOfficialRedAlert = (kyivCityAlert && alerts['__red_м. Київ'] == true) ||
+        (kyivOblastAlert && alerts['__red_Київська область'] == true);
 
     String statusTitle = "БЕЗПЕЧНО";
-    if (hasMissiles) {
-      statusTitle = "РАКЕТНА ЗАГРОЗА";
-    } else if (hasUavs || threats.isNotEmpty) {
-      statusTitle = "ЗАГРОЗА БПЛА";
+    if (isOfficialRedAlert) {
+      statusTitle = "РАКЕТНА ТРИВОГА";
     } else if (anyAlert) {
-      statusTitle = "ПОВІТРЯНА ТРИВОГА";
+      statusTitle = "ТРИВОГА (БПЛА)";
     }
 
     String nearestInfo = "Немає загроз поблизу";
@@ -1783,7 +1999,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
     final now = DateTime.now();
     final updatedTime = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}";
-    final bool isAlert = anyAlert || threats.isNotEmpty;
+    final bool isAlert = anyAlert;
 
     final threatsList = threats.map((t) {
       final rawPath = t['path'];
@@ -1876,8 +2092,15 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     final bool hasUpdate = remoteConfig.versionCode > kCurrentVersionCode && remoteConfig.apkUrl.isNotEmpty; 
 
     if (isTestMode) {
-      alerts = {'м. Київ': true, 'Київська область': true};
       final testCount = ref.watch(testMessageIndexProvider);
+      final bool isTestRed = testCount >= 5 && testCount <= 7;
+      final bool isTestClear = testCount >= 11;
+      alerts = {
+        'м. Київ': !isTestClear,
+        '__red_м. Київ': isTestRed,
+        'Київська область': !isTestClear,
+        '__red_Київська область': isTestRed,
+      };
       
       final allTestMessages = [
           {
@@ -1978,24 +2201,186 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     }
 
     final isLoadingInitial = ref.read(messagesProvider.notifier).isLoading && !isTestMode;
+    final bool headerKyivAlert = alerts['м. Київ'] == true;
+    final bool headerKyivRed = headerKyivAlert && alerts['__red_м. Київ'] == true;
+    final bool headerOblastAlert = alerts['Київська область'] == true;
+    final bool headerOblastRed = headerOblastAlert && alerts['__red_Київська область'] == true;
+    final bool headerAnyAlert = headerKyivAlert || headerOblastAlert;
+    final bool headerAnyRed = headerKyivRed || headerOblastRed;
+    final Color headerAlertAccent = headerAnyRed
+        ? Colors.redAccent
+        : (headerAnyAlert ? const Color(0xFFFFC107) : Colors.cyanAccent);
+    final Color headerKyivColor = !headerKyivAlert
+        ? Colors.greenAccent
+        : (headerKyivRed ? Colors.redAccent : const Color(0xFFFFC107));
+    final Color headerOblastColor = !headerOblastAlert
+        ? Colors.greenAccent
+        : (headerOblastRed ? Colors.redAccent : const Color(0xFFFFC107));
+    final bool isDesktopHeader = MediaQuery.of(context).size.width > 800;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Kyiv Alert 🇺🇦', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        toolbarHeight: 58,
+        titleSpacing: 14,
+        title: Row(
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: headerAlertAccent.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: headerAlertAccent.withValues(alpha: 0.55),
+                  width: 1.2,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: headerAlertAccent.withValues(alpha: 0.25),
+                    blurRadius: 10,
+                  ),
+                ],
+              ),
+              child: Icon(
+                Icons.radar_rounded,
+                size: 20,
+                color: headerAlertAccent,
+              ),
+            ),
+            const SizedBox(width: 10),
+            const Text(
+              'KYIV ALERT 🇺🇦',
+              style: TextStyle(
+                fontWeight: FontWeight.w800,
+                fontSize: 16.5,
+                letterSpacing: 0.6,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A2234),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: const Color(0xFF2B3752), width: 0.8),
+              ),
+              child: Text(
+                'v$kCurrentVersionName',
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white60,
+                  letterSpacing: 0.3,
+                ),
+              ),
+            ),
+            if (isDesktopHeader) ...[
+              const SizedBox(width: 18),
+              Container(width: 1, height: 22, color: const Color(0xFF253047)),
+              const SizedBox(width: 14),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4.5),
+                decoration: BoxDecoration(
+                  color: headerKyivColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: headerKyivColor.withValues(alpha: 0.45),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      headerKyivAlert ? Icons.warning_amber_rounded : Icons.verified_user_outlined,
+                      size: 14,
+                      color: headerKyivColor,
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      !headerKyivAlert
+                          ? 'м. Київ: Чисто'
+                          : (headerKyivRed ? 'м. Київ: РАКЕТНА ТРИВОГА' : 'м. Київ: ТРИВОГА (БпЛА)'),
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: !headerKyivAlert
+                            ? Colors.greenAccent.shade100
+                            : (headerKyivRed ? Colors.redAccent.shade100 : const Color(0xFFFFE082)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4.5),
+                decoration: BoxDecoration(
+                  color: headerOblastColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: headerOblastColor.withValues(alpha: 0.45),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      headerOblastAlert ? Icons.warning_amber_rounded : Icons.shield_outlined,
+                      size: 14,
+                      color: headerOblastColor,
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      !headerOblastAlert
+                          ? 'Київщина: Чисто'
+                          : (headerOblastRed ? 'Київщина: РАКЕТНА ТРИВОГА' : 'Київщина: ТРИВОГА (БпЛА)'),
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: !headerOblastAlert
+                            ? Colors.greenAccent.shade100
+                            : (headerOblastRed ? Colors.redAccent.shade100 : const Color(0xFFFFE082)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
         centerTitle: false,
         actions: [
           IconButton(
-            icon: const Icon(Icons.coffee_outlined, color: Colors.amberAccent),
+            icon: const Icon(Icons.coffee_outlined, color: Colors.amberAccent, size: 21),
             tooltip: 'Зведення (Ранковий брифінг)',
+            style: IconButton.styleFrom(
+              backgroundColor: const Color(0xFF182032),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+                side: const BorderSide(color: Color(0xFF28334A), width: 0.8),
+              ),
+            ),
             onPressed: () {
               _closeSettingsMenu();
               _showMorningDigestSheet(context);
             },
           ),
+          const SizedBox(width: 6),
           IconButton(
-            icon: Icon(_isNightWatchMode ? Icons.bedtime : Icons.bedtime_outlined),
-            color: _isNightWatchMode ? Colors.amberAccent : Colors.grey,
+            icon: Icon(_isNightWatchMode ? Icons.bedtime : Icons.bedtime_outlined, size: 21),
+            color: _isNightWatchMode ? Colors.amberAccent : Colors.white70,
             tooltip: _isNightWatchMode ? "Режим 'Нічний вартовий' (УВІМКНЕНО, +3.5 км до зон)" : "Режим 'Нічний вартовий' (Вимкнено)",
+            style: IconButton.styleFrom(
+              backgroundColor: _isNightWatchMode ? const Color(0xFF2A1B4E) : const Color(0xFF182032),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+                side: BorderSide(
+                  color: _isNightWatchMode ? Colors.amberAccent.withValues(alpha: 0.6) : const Color(0xFF28334A),
+                  width: 0.8,
+                ),
+              ),
+            ),
             onPressed: () {
               setState(() {
                 _isNightWatchMode = !_isNightWatchMode;
@@ -2014,19 +2399,31 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
               );
             },
           ),
+          const SizedBox(width: 6),
           IconButton(
             icon: AnimatedRotation(
               turns: _isSettingsMenuOpen ? 0.25 : 0.0,
               duration: const Duration(milliseconds: 200),
               child: Icon(
                 _isSettingsMenuOpen ? Icons.close_rounded : Icons.tune_rounded,
+                size: 21,
                 color: _isSettingsMenuOpen ? Colors.cyanAccent : Colors.white70,
+              ),
+            ),
+            style: IconButton.styleFrom(
+              backgroundColor: _isSettingsMenuOpen ? const Color(0xFF122C38) : const Color(0xFF182032),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+                side: BorderSide(
+                  color: _isSettingsMenuOpen ? Colors.cyanAccent.withValues(alpha: 0.6) : const Color(0xFF28334A),
+                  width: 0.8,
+                ),
               ),
             ),
             tooltip: 'Налаштування та інструменти',
             onPressed: _toggleSettingsMenu,
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 12),
         ],
       ),
       body: isLoadingInitial 
@@ -2043,15 +2440,23 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
               final mapWidget = Expanded(
                   flex: isWide ? 7 : 12,
                   child: Container(
-                    margin: const EdgeInsets.all(12.0),
+                    margin: EdgeInsets.fromLTRB(12.0, 12.0, isWide ? 6.0 : 12.0, 12.0),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: headerAnyRed
+                            ? Colors.redAccent.withValues(alpha: 0.48)
+                            : (headerAnyAlert
+                                ? const Color(0xFFFFC107).withValues(alpha: 0.42)
+                                : const Color(0xFF222C40)),
+                        width: 1.2,
+                      ),
                       boxShadow: const [
-                        BoxShadow(color: Colors.black45, blurRadius: 10, offset: Offset(0, 4))
+                        BoxShadow(color: Colors.black54, blurRadius: 14, offset: Offset(0, 6))
                       ],
                     ),
                     child: ClipRRect(
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(15),
                       child: Builder(
                         builder: (context) {
                           final bool kyivCityAlert = alerts['м. Київ'] == true;
@@ -2066,7 +2471,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             final txtLen = (m['text'] ?? '').toString().length;
                             return '${m['id']}:${m['date']}:$txtLen:$mergedLen';
                           }).join('|');
-                          final trajectorySig = '${topMsgsSig}_${messages.length}_${alerts['м. Київ']}_${alerts['Київська область']}_${_isReplayMode}_${_replayOffsetMinutes.toStringAsFixed(1)}_${now.millisecondsSinceEpoch ~/ 2500}';
+                          final trajectorySig = '${topMsgsSig}_${messages.length}_${alerts['м. Київ']}_${alerts['__red_м. Київ']}_${alerts['Київська область']}_${alerts['__red_Київська область']}_${_isReplayMode}_${_replayOffsetMinutes.toStringAsFixed(1)}_${now.millisecondsSinceEpoch ~/ 2500}';
 
                           List<Map<String, dynamic>> activeAirDefenses = [];
                           String? northThreatLabel;
@@ -2623,12 +3028,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     !msgTextLower.contains('област');
 
                                 if (isKyivCityClear) {
-                                  // Якщо написали "Київ чисто" — прибираємо цілі лише над містом Київ (радіус <= 18 км)
+                                  // Якщо написали "Київ чисто" — прибираємо цілі лише в адміністративних межах міста Київ
                                   threats.removeWhere((t) {
                                     if (onlyClearUavs && !onlyClearMissiles && (t['type'] == 'missile_ballistic' || t['type'] == 'missile_cruise' || t['type'] == 'missile_hypersonic' || t['type'] == 'missile_supersonic' || t['type'] == 'kab')) return false;
                                     if (onlyClearMissiles && !onlyClearUavs && !t['type'].toString().contains('missile')) return false;
                                     final p = (t['path'] as List<LatLng>).last;
-                                    final shouldRemove = const Distance().as(LengthUnit.Meter, kyivCenter, p) <= 18000;
+                                    final shouldRemove = _isPointInKyivCity(p);
                                     if (shouldRemove) {
                                       final pList = (t['waypoints'] as List<LatLng>?) ?? (t['path'] as List<LatLng>?) ?? [p];
                                       for (final pt in pList) {
@@ -3994,17 +4399,17 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                           }
 
                           final activeThreats = threats.where((t) => t['isDestroyed'] != true).toList();
+                          final bool isOfficialRedAlert = (kyivCityAlert && alerts['__red_м. Київ'] == true) ||
+                              (kyivOblastAlert && alerts['__red_Київська область'] == true);
                           int overallStatus = 1;
-                          if (hasMissiles) {
+                          if (isOfficialRedAlert) {
                             overallStatus = 3;
-                          } else if (activeThreats.isNotEmpty) {
-                            overallStatus = 2;
                           } else if (anyAlert) {
                             overallStatus = 2;
                           }
 
                           if (overallStatus == 3) {
-                            final threatKey = 'ballistic_alert:${activeThreats.map((t) => t['msgId']).join(',')}';
+                            final threatKey = 'ballistic_alert:${alerts['__red_м. Київ']}_${alerts['__red_Київська область']}_${activeThreats.map((t) => t['msgId']).join(',')}';
                             if (!_alertedLocationThreatKeys.contains(threatKey)) {
                               _alertedLocationThreatKeys.add(threatKey);
                               if (_isNightWatchMode) {
@@ -4029,10 +4434,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                           
                           if (overallStatus == 3) {
                             statusColor = Colors.redAccent;
-                            statusText = "Ракетна загроза";
+                            statusText = "Ракетна тривога";
                           } else if (overallStatus == 2) {
-                            statusColor = Colors.orangeAccent;
-                            statusText = "Загроза БПЛА";
+                            statusColor = const Color(0xFFFFC107);
+                            statusText = "Тривога (БпЛА)";
                           }
 
                           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -4109,19 +4514,6 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   if (geoJsonAsync.hasValue)
                                     PolygonLayer(
                                       polygons: _buildAlertPolygons(geoJsonAsync.value!, alerts, threats, globalMissileThreat: overallStatus == 3),
-                                    ),
-                                  if (alerts['м. Київ'] == true)
-                                    CircleLayer(
-                                      circles: [
-                                        CircleMarker(
-                                          point: const LatLng(50.4501, 30.5234),
-                                          radius: 18000,
-                                          useRadiusInMeter: true,
-                                          color: _getAlertFillColor(overallStatus),
-                                          borderColor: _getAlertBorderColor(overallStatus),
-                                          borderStrokeWidth: 1.5,
-                                        )
-                                      ],
                                     ),
                                   if (activeWatchedLocations.isNotEmpty)
                                     CircleLayer(
@@ -4379,16 +4771,18 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                 top: isWakeupBannerVisible ? 60 : 16,
                                 left: 16,
                                 child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8.5),
                                   decoration: BoxDecoration(
-                                    color: Colors.black87,
-                                    borderRadius: BorderRadius.circular(20),
-                                    border: Border.all(color: statusColor.withValues(alpha: 0.5), width: 1),
+                                    color: const Color(0xEB0E1420),
+                                    borderRadius: BorderRadius.circular(22),
+                                    border: Border.all(color: statusColor.withValues(alpha: 0.65), width: 1.2),
                                     boxShadow: [
-                                      BoxShadow(color: statusColor.withValues(alpha: 0.3), blurRadius: 8, spreadRadius: 1)
-                                    ]
+                                      BoxShadow(color: Colors.black.withValues(alpha: 0.55), blurRadius: 10, offset: const Offset(0, 3)),
+                                      BoxShadow(color: statusColor.withValues(alpha: 0.25), blurRadius: 10, spreadRadius: 1),
+                                    ],
                                   ),
                                   child: Row(
+                                    mainAxisSize: MainAxisSize.min,
                                     children: [
                                       Container(
                                         width: 10,
@@ -4397,15 +4791,20 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           color: statusColor,
                                           shape: BoxShape.circle,
                                           boxShadow: [
-                                            BoxShadow(color: statusColor, blurRadius: 6, spreadRadius: 2)
-                                          ]
+                                            BoxShadow(color: statusColor, blurRadius: 7, spreadRadius: 1.5)
+                                          ],
                                         ),
                                       ),
-                                      const SizedBox(width: 8),
+                                      const SizedBox(width: 9),
                                       Text(
                                         statusText,
-                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
-                                      )
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w800,
+                                          fontSize: 13,
+                                          letterSpacing: 0.2,
+                                        ),
+                                      ),
                                     ],
                                   ),
                                 ),
@@ -4674,21 +5073,32 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       );
                                     },
                                     child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8.5),
                                       decoration: BoxDecoration(
-                                        color: Colors.black87,
-                                        borderRadius: BorderRadius.circular(20),
-                                        border: Border.all(color: Colors.redAccent, width: 1),
-                                        boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 4, offset: Offset(0, 2))],
+                                        color: const Color(0xEB1A0F14),
+                                        borderRadius: BorderRadius.circular(22),
+                                        border: Border.all(color: Colors.redAccent.withValues(alpha: 0.8), width: 1.2),
+                                        boxShadow: [
+                                          BoxShadow(color: Colors.black.withValues(alpha: 0.55), blurRadius: 10, offset: const Offset(0, 3)),
+                                          BoxShadow(color: Colors.redAccent.withValues(alpha: 0.28), blurRadius: 10, spreadRadius: 1),
+                                        ],
                                       ),
                                       child: Row(
+                                        mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 20),
+                                          const Icon(Icons.radar_rounded, color: Colors.redAccent, size: 19),
                                           const SizedBox(width: 8),
                                           Text(
                                             'Активні цілі: ${threats.where((t) => t['isDestroyed'] != true).length}',
-                                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                                          )
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.w800,
+                                              fontSize: 13,
+                                              letterSpacing: 0.2,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white70, size: 18),
                                         ],
                                       ),
                                     ),
@@ -4702,7 +5112,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   child: Container(
                                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xF21C1C1C),
+                                      color: const Color(0xF2121824),
                                       borderRadius: BorderRadius.circular(16),
                                       border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.6), width: 1.2),
                                       boxShadow: const [
@@ -4805,10 +5215,10 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                       fontSize: 12,
                                     ),
                                   ),
-                                  backgroundColor: _isReplayMode ? const Color(0xFF003840) : const Color(0xFF1E1E1E),
+                                  backgroundColor: _isReplayMode ? const Color(0xFF0A323A) : const Color(0xEB111724),
                                   side: BorderSide(
-                                    color: _isReplayMode ? Colors.cyanAccent : Colors.white24,
-                                    width: 1,
+                                    color: _isReplayMode ? Colors.cyanAccent : const Color(0xFF2B3750),
+                                    width: 1.1,
                                   ),
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                                   onPressed: () {
@@ -4827,52 +5237,102 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                               Positioned(
                                 bottom: 16,
                                 right: 16,
-                                child: FloatingActionButton.small(
-                                  backgroundColor: const Color(0xFF1E1E1E),
-                                  foregroundColor: Colors.white,
-                                  tooltip: _isSmartFocusActive
-                                      ? 'Огляд Київщини'
-                                      : (threats.isNotEmpty && watchedLocations.any((l) => l.enabled)
-                                          ? 'Фокус: Загроза - Дім'
-                                          : 'Центрувати на Київ'),
-                                  onPressed: () {
-                                    final activeHome = watchedLocations.where((l) => l.enabled).firstOrNull;
-                                    if (!_isSmartFocusActive && threats.isNotEmpty && activeHome != null) {
-                                      double minDistance = double.infinity;
-                                      LatLng? closestPt;
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (isWide) ...[
+                                      Container(
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xEB111724),
+                                          borderRadius: BorderRadius.circular(12),
+                                          border: Border.all(color: const Color(0xFF2B3750), width: 1.0),
+                                          boxShadow: const [
+                                            BoxShadow(color: Colors.black54, blurRadius: 8, offset: Offset(0, 3)),
+                                          ],
+                                        ),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            InkWell(
+                                              borderRadius: const BorderRadius.vertical(top: Radius.circular(11)),
+                                              onTap: () {
+                                                final cam = _mapController.camera;
+                                                _animatedMapMove(cam.center, (cam.zoom + 0.7).clamp(5.0, 18.0));
+                                              },
+                                              child: const Padding(
+                                                padding: EdgeInsets.all(9.0),
+                                                child: Icon(Icons.add_rounded, color: Colors.white, size: 20),
+                                              ),
+                                            ),
+                                            Container(width: 22, height: 1, color: const Color(0xFF28334A)),
+                                            InkWell(
+                                              borderRadius: const BorderRadius.vertical(bottom: Radius.circular(11)),
+                                              onTap: () {
+                                                final cam = _mapController.camera;
+                                                _animatedMapMove(cam.center, (cam.zoom - 0.7).clamp(5.0, 18.0));
+                                              },
+                                              child: const Padding(
+                                                padding: EdgeInsets.all(9.0),
+                                                child: Icon(Icons.remove_rounded, color: Colors.white, size: 20),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                    ],
+                                    FloatingActionButton.small(
+                                      backgroundColor: const Color(0xEB111724),
+                                      foregroundColor: Colors.cyanAccent,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                        side: const BorderSide(color: Color(0xFF2B3750), width: 1.0),
+                                      ),
+                                      tooltip: _isSmartFocusActive
+                                          ? 'Огляд Київщини'
+                                          : (threats.isNotEmpty && watchedLocations.any((l) => l.enabled)
+                                              ? 'Фокус: Загроза - Дім'
+                                              : 'Центрувати на Київ'),
+                                      onPressed: () {
+                                        final activeHome = watchedLocations.where((l) => l.enabled).firstOrNull;
+                                        if (!_isSmartFocusActive && threats.isNotEmpty && activeHome != null) {
+                                          double minDistance = double.infinity;
+                                          LatLng? closestPt;
 
-                                      for (final t in threats) {
-                                        final pts = (t['path'] as List<LatLng>?) ?? [];
-                                        final pt = pts.isNotEmpty ? pts.last : null;
-                                        if (pt != null) {
-                                          final dist = const Distance().as(LengthUnit.Meter, activeHome.point, pt);
-                                          if (dist < minDistance) {
-                                            minDistance = dist;
-                                            closestPt = pt;
+                                          for (final t in threats) {
+                                            final pts = (t['path'] as List<LatLng>?) ?? [];
+                                            final pt = pts.isNotEmpty ? pts.last : null;
+                                            if (pt != null) {
+                                              final dist = const Distance().as(LengthUnit.Meter, activeHome.point, pt);
+                                              if (dist < minDistance) {
+                                                minDistance = dist;
+                                                closestPt = pt;
+                                              }
+                                            }
+                                          }
+
+                                          if (closestPt != null) {
+                                            final midLat = (activeHome.point.latitude + closestPt.latitude) / 2.0;
+                                            final midLon = (activeHome.point.longitude + closestPt.longitude) / 2.0;
+                                            _animatedMapMove(LatLng(midLat, midLon), 9.8);
+                                            setState(() {
+                                              _isSmartFocusActive = true;
+                                            });
+                                            return;
                                           }
                                         }
-                                      }
 
-                                      if (closestPt != null) {
-                                        final midLat = (activeHome.point.latitude + closestPt.latitude) / 2.0;
-                                        final midLon = (activeHome.point.longitude + closestPt.longitude) / 2.0;
-                                        _animatedMapMove(LatLng(midLat, midLon), 9.8);
+                                        _animatedMapMove(const LatLng(50.4501, 30.5234), isWide ? 8.2 : 8.8);
                                         setState(() {
-                                          _isSmartFocusActive = true;
+                                          _isSmartFocusActive = false;
                                         });
-                                        return;
-                                      }
-                                    }
-
-                                    _animatedMapMove(const LatLng(50.4501, 30.5234), isWide ? 8.2 : 8.8);
-                                    setState(() {
-                                      _isSmartFocusActive = false;
-                                    });
-                                  },
-                                  child: Icon(
-                                    _isSmartFocusActive ? Icons.zoom_out_map : Icons.my_location,
-                                    size: 20,
-                                  ),
+                                      },
+                                      child: Icon(
+                                        _isSmartFocusActive ? Icons.zoom_out_map : Icons.my_location,
+                                        size: 20,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
                               if (_selectedThreatMsgId != null)
@@ -5040,246 +5500,394 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
 
                 final listWidget = Expanded(
                   flex: isWide ? 3 : 8,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    onTap: () {
-                      if (_selectedThreatMsgId != null) {
-                        setState(() {
-                          _selectedThreatMsgId = null;
-                        });
-                      }
-                    },
-                    child: Column(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: Row(
-                              children: [
-                                _buildFeedFilterChip(
-                                  label: 'Усі (${messages.length})',
-                                  filterKey: 'all',
-                                  activeColor: Colors.blueAccent,
+                  child: Container(
+                    margin: isWide
+                        ? const EdgeInsets.fromLTRB(6.0, 12.0, 12.0, 12.0)
+                        : EdgeInsets.zero,
+                    decoration: isWide
+                        ? BoxDecoration(
+                            color: const Color(0xFF101520),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: const Color(0xFF212B3F), width: 1.2),
+                            boxShadow: const [
+                              BoxShadow(color: Colors.black54, blurRadius: 14, offset: Offset(0, 6)),
+                            ],
+                          )
+                        : null,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onTap: () {
+                        if (_selectedThreatMsgId != null) {
+                          setState(() {
+                            _selectedThreatMsgId = null;
+                          });
+                        }
+                      },
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (isWide)
+                            Container(
+                              padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+                              decoration: const BoxDecoration(
+                                border: Border(
+                                  bottom: BorderSide(color: Color(0xFF1E273A), width: 1),
                                 ),
-                                const SizedBox(width: 8),
-                                _buildFeedFilterChip(
-                                  label: '🚨 Цілі на радарі',
-                                  filterKey: 'threats',
-                                  activeColor: Colors.redAccent,
-                                ),
-                                const SizedBox(width: 8),
-                                _buildFeedFilterChip(
-                                  label: '🛡️ ППО / Відбої',
-                                  filterKey: 'defenseClear',
-                                  activeColor: Colors.cyanAccent,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: filteredMessages.isEmpty
-                              ? Center(
-                                  child: Text(
-                                    _feedFilter == 'all' ? 'Немає нових повідомлень' : 'Немає повідомлень за цим фільтром',
-                                    style: const TextStyle(color: Colors.grey),
-                                  ),
-                                )
-                              : ListView.builder(
-                                  padding: const EdgeInsets.symmetric(horizontal: 12.0),
-                                  itemCount: filteredMessages.length,
-                                  itemBuilder: (context, index) {
-                                    final msg = filteredMessages[index];
-                          
-                          IconData iconData = Icons.info_outline;
-                          Color iconColor = Colors.blueAccent;
-                          
-                          if (msg['type'] == 'danger') {
-                            iconData = Icons.warning_rounded;
-                            iconColor = Colors.redAccent;
-                          } else if (msg['type'] == 'alert') {
-                            iconData = Icons.notifications_active;
-                            iconColor = Colors.orangeAccent;
-                          } else if (msg['type'] == 'clear') {
-                            iconData = Icons.check_circle;
-                            iconColor = Colors.green;
-                          } else if (msg['type'] == 'news') {
-                            iconData = Icons.article;
-                            iconColor = Colors.grey;
-                          }
-
-                          String timeStr = '';
-                          if (msg['date'] != null) {
-                            try {
-                              final utc = DateTime.parse(msg['date']).toUtc();
-                              bool isSummerTime = false;
-                              if (utc.month > 3 && utc.month < 10) {
-                                isSummerTime = true;
-                              } else if (utc.month == 3) {
-                                final lastSundayDay = 31 - (DateTime.utc(utc.year, 3, 31).weekday % 7);
-                                if (utc.day >= lastSundayDay) isSummerTime = true;
-                              } else if (utc.month == 10) {
-                                final lastSundayDay = 31 - (DateTime.utc(utc.year, 10, 31).weekday % 7);
-                                if (utc.day < lastSundayDay) isSummerTime = true;
-                              }
-                              final kyivTime = utc.add(Duration(hours: isSummerTime ? 3 : 2));
-                              final hhMm = '${kyivTime.hour.toString().padLeft(2, '0')}:${kyivTime.minute.toString().padLeft(2, '0')}';
-
-                              final nowKyiv = DateTime.now().toUtc().add(Duration(hours: isSummerTime ? 3 : 2));
-                              final diff = nowKyiv.difference(kyivTime);
-
-                              final bool isDifferentDay = nowKyiv.year != kyivTime.year || nowKyiv.month != kyivTime.month || nowKyiv.day != kyivTime.day;
-                              final bool isYesterday = isDifferentDay && (DateTime(nowKyiv.year, nowKyiv.month, nowKyiv.day).difference(DateTime(kyivTime.year, kyivTime.month, kyivTime.day)).inDays == 1);
-
-                              if (isYesterday) {
-                                timeStr = 'Вчора, $hhMm';
-                              } else if (isDifferentDay) {
-                                timeStr = '${kyivTime.day.toString().padLeft(2, '0')}.${kyivTime.month.toString().padLeft(2, '0')}, $hhMm';
-                              } else if (diff.inHours >= 3) {
-                                timeStr = 'Сьогодні, $hhMm';
-                              } else {
-                                timeStr = hhMm;
-                              }
-                            } catch (_) {}
-                          }
-                          
-                          final bool isSelected = _selectedThreatMsgId != null && _selectedThreatMsgId == msg['id'];
-                          
-                          return Card(
-                            margin: const EdgeInsets.only(bottom: 8.0),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              side: isSelected
-                                  ? const BorderSide(color: Colors.cyanAccent, width: 1.5)
-                                  : BorderSide.none,
-                            ),
-                            child: ListTile(
-                              onTap: () {
-                                List<dynamic> targetThreats = (msg['threats'] as List?) ?? [];
-                                if (targetThreats.isEmpty) {
-                                  targetThreats = ref.read(messagesProvider.notifier).parseLocalThreats(msg['text']?.toString() ?? '');
-                                }
-                                LatLng? targetPos;
-                                for (var th in targetThreats) {
-                                  if (th['path'] is List && (th['path'] as List).isNotEmpty) {
-                                    final pItem = (th['path'] as List).last;
-                                    if (pItem is LatLng) {
-                                      targetPos = pItem;
-                                      break;
-                                    } else if (pItem is Map && pItem['lat'] != null && pItem['lon'] != null) {
-                                      targetPos = LatLng((pItem['lat'] as num).toDouble(), (pItem['lon'] as num).toDouble());
-                                      break;
-                                    }
-                                  }
-                                }
-                                if (targetPos != null) {
-                                  _animatedMapMove(targetPos, 10.8);
-                                  setState(() {
-                                    _selectedThreatMsgId = msg['id'];
-                                  });
-                                }
-                              },
-                              leading: CircleAvatar(
-                                backgroundColor: iconColor.withValues(alpha: 0.2),
-                                child: Icon(iconData, color: iconColor),
                               ),
-                              title: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
+                              child: Row(
                                 children: [
-                                  if (msg['reply_quoted_text'] != null && msg['reply_quoted_text'].toString().trim().isNotEmpty) ...[
-                                    Container(
-                                      margin: const EdgeInsets.only(bottom: 6.0),
-                                      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-                                      decoration: BoxDecoration(
-                                        color: Colors.purple.withValues(alpha: 0.12),
-                                        borderRadius: BorderRadius.circular(6.0),
-                                        border: const Border(
-                                          left: BorderSide(color: Colors.purpleAccent, width: 3.0),
-                                        ),
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(Icons.reply, size: 13, color: Colors.purpleAccent),
-                                          const SizedBox(width: 4),
-                                          Flexible(
-                                            child: Text(
-                                              'У відповідь на: ${msg['reply_quoted_text']}',
-                                              maxLines: 2,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                color: Colors.purpleAccent,
-                                                fontSize: 11.5,
-                                                fontStyle: FontStyle.italic,
-                                                fontWeight: FontWeight.w500,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
+                                  const Icon(Icons.rss_feed_rounded, color: Colors.cyanAccent, size: 17),
+                                  const SizedBox(width: 8),
+                                  const Expanded(
+                                    child: Text(
+                                      'ОПЕРАТИВНА СТРІЧКА',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w800,
+                                        letterSpacing: 0.7,
                                       ),
                                     ),
-                                  ] else if (msg['reply_to_post_id'] != null) ...[
-                                    Container(
-                                      margin: const EdgeInsets.only(bottom: 6.0),
-                                      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-                                      decoration: BoxDecoration(
-                                        color: Colors.purple.withValues(alpha: 0.12),
-                                        borderRadius: BorderRadius.circular(6.0),
-                                        border: const Border(
-                                          left: BorderSide(color: Colors.purpleAccent, width: 3.0),
-                                        ),
-                                      ),
-                                      child: const Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(Icons.reply, size: 13, color: Colors.purpleAccent),
-                                          SizedBox(width: 4),
-                                          Text(
-                                            'У відповідь на попередній пост',
-                                            style: TextStyle(
-                                              color: Colors.purpleAccent,
-                                              fontSize: 11.5,
-                                              fontStyle: FontStyle.italic,
-                                              fontWeight: FontWeight.w500,
-                                            ),
-                                          ),
-                                        ],
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF1A2336),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: const Color(0xFF2B3954), width: 0.8),
+                                    ),
+                                    child: Text(
+                                      '${filteredMessages.length}',
+                                      style: const TextStyle(
+                                        color: Colors.cyanAccent,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
                                       ),
                                     ),
-                                  ],
-                                  Text(
-                                    msg['text'] ?? '',
-                                    style: const TextStyle(fontSize: 14),
                                   ),
                                 ],
                               ),
-                              subtitle: Padding(
-                                padding: const EdgeInsets.only(top: 8.0),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text(
-                                      msg['channel'] ?? '',
-                                      style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
-                                    ),
-                                    Text(
-                                      timeStr,
-                                      style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontWeight: FontWeight.bold),
-                                    ),
-                                  ],
-                                ),
+                            ),
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                            child: SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: Row(
+                                children: [
+                                  _buildFeedFilterChip(
+                                    label: 'Усі (${messages.length})',
+                                    filterKey: 'all',
+                                    activeColor: Colors.blueAccent,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  _buildFeedFilterChip(
+                                    label: '🚨 Цілі на радарі',
+                                    filterKey: 'threats',
+                                    activeColor: Colors.redAccent,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  _buildFeedFilterChip(
+                                    label: '🛡️ ППО / Відбої',
+                                    filterKey: 'defenseClear',
+                                    activeColor: Colors.cyanAccent,
+                                  ),
+                                ],
                               ),
                             ),
-                          );
-                        },
+                          ),
+                          Expanded(
+                            child: filteredMessages.isEmpty
+                                ? Center(
+                                    child: Text(
+                                      _feedFilter == 'all' ? 'Немає нових повідомлень' : 'Немає повідомлень за цим фільтром',
+                                      style: const TextStyle(color: Colors.grey),
+                                    ),
+                                  )
+                                : ListView.builder(
+                                    padding: const EdgeInsets.fromLTRB(12.0, 2.0, 12.0, 12.0),
+                                    itemCount: filteredMessages.length,
+                                    itemBuilder: (context, index) {
+                                      final msg = filteredMessages[index];
+
+                                      IconData iconData = Icons.info_outline_rounded;
+                                      Color iconColor = Colors.blueAccent;
+
+                                      if (msg['type'] == 'danger') {
+                                        iconData = Icons.warning_amber_rounded;
+                                        iconColor = Colors.redAccent;
+                                      } else if (msg['type'] == 'alert') {
+                                        iconData = Icons.notifications_active_rounded;
+                                        iconColor = Colors.orangeAccent;
+                                      } else if (msg['type'] == 'clear') {
+                                        iconData = Icons.check_circle_outline_rounded;
+                                        iconColor = Colors.greenAccent;
+                                      } else if (msg['type'] == 'news') {
+                                        iconData = Icons.article_outlined;
+                                        iconColor = Colors.blueGrey.shade300;
+                                      }
+
+                                      String timeStr = '';
+                                      if (msg['date'] != null) {
+                                        try {
+                                          final utc = DateTime.parse(msg['date']).toUtc();
+                                          bool isSummerTime = false;
+                                          if (utc.month > 3 && utc.month < 10) {
+                                            isSummerTime = true;
+                                          } else if (utc.month == 3) {
+                                            final lastSundayDay = 31 - (DateTime.utc(utc.year, 3, 31).weekday % 7);
+                                            if (utc.day >= lastSundayDay) isSummerTime = true;
+                                          } else if (utc.month == 10) {
+                                            final lastSundayDay = 31 - (DateTime.utc(utc.year, 10, 31).weekday % 7);
+                                            if (utc.day < lastSundayDay) isSummerTime = true;
+                                          }
+                                          final kyivTime = utc.add(Duration(hours: isSummerTime ? 3 : 2));
+                                          final hhMm = '${kyivTime.hour.toString().padLeft(2, '0')}:${kyivTime.minute.toString().padLeft(2, '0')}';
+
+                                          final nowKyiv = DateTime.now().toUtc().add(Duration(hours: isSummerTime ? 3 : 2));
+                                          final diff = nowKyiv.difference(kyivTime);
+
+                                          final bool isDifferentDay = nowKyiv.year != kyivTime.year || nowKyiv.month != kyivTime.month || nowKyiv.day != kyivTime.day;
+                                          final bool isYesterday = isDifferentDay && (DateTime(nowKyiv.year, nowKyiv.month, nowKyiv.day).difference(DateTime(kyivTime.year, kyivTime.month, kyivTime.day)).inDays == 1);
+
+                                          if (isYesterday) {
+                                            timeStr = 'Вчора, $hhMm';
+                                          } else if (isDifferentDay) {
+                                            timeStr = '${kyivTime.day.toString().padLeft(2, '0')}.${kyivTime.month.toString().padLeft(2, '0')}, $hhMm';
+                                          } else if (diff.inHours >= 3) {
+                                            timeStr = 'Сьогодні, $hhMm';
+                                          } else {
+                                            timeStr = hhMm;
+                                          }
+                                        } catch (_) {}
+                                      }
+
+                                      final bool isSelected = _selectedThreatMsgId != null && _selectedThreatMsgId == msg['id'];
+                                      final bool hasRadarPoint = (msg['threats'] is List && (msg['threats'] as List).isNotEmpty);
+
+                                      return Container(
+                                        margin: const EdgeInsets.only(bottom: 8.5),
+                                        decoration: BoxDecoration(
+                                          color: isSelected
+                                              ? const Color(0xFF17263B)
+                                              : (msg['type'] == 'danger'
+                                                  ? const Color(0xFF1A1722)
+                                                  : const Color(0xFF151C2A)),
+                                          borderRadius: BorderRadius.circular(12),
+                                          border: Border.all(
+                                            color: isSelected
+                                                ? Colors.cyanAccent
+                                                : (msg['type'] == 'danger'
+                                                    ? Colors.redAccent.withValues(alpha: 0.28)
+                                                    : const Color(0xFF222C42)),
+                                            width: isSelected ? 1.4 : 1.0,
+                                          ),
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color: Colors.black.withValues(alpha: 0.25),
+                                              blurRadius: 6,
+                                              offset: const Offset(0, 2),
+                                            ),
+                                          ],
+                                        ),
+                                        child: Material(
+                                          color: Colors.transparent,
+                                          child: InkWell(
+                                            borderRadius: BorderRadius.circular(12),
+                                            onTap: () {
+                                              List<dynamic> targetThreats = (msg['threats'] as List?) ?? [];
+                                              if (targetThreats.isEmpty) {
+                                                targetThreats = ref.read(messagesProvider.notifier).parseLocalThreats(msg['text']?.toString() ?? '');
+                                              }
+                                              LatLng? targetPos;
+                                              for (var th in targetThreats) {
+                                                if (th['path'] is List && (th['path'] as List).isNotEmpty) {
+                                                  final pItem = (th['path'] as List).last;
+                                                  if (pItem is LatLng) {
+                                                    targetPos = pItem;
+                                                    break;
+                                                  } else if (pItem is Map && pItem['lat'] != null && pItem['lon'] != null) {
+                                                    targetPos = LatLng((pItem['lat'] as num).toDouble(), (pItem['lon'] as num).toDouble());
+                                                    break;
+                                                  }
+                                                }
+                                              }
+                                              if (targetPos != null) {
+                                                _animatedMapMove(targetPos, 10.8);
+                                                setState(() {
+                                                  _selectedThreatMsgId = msg['id'];
+                                                });
+                                              }
+                                            },
+                                            child: IntrinsicHeight(
+                                              child: Row(
+                                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                                children: [
+                                                  Container(
+                                                    width: 4,
+                                                    decoration: BoxDecoration(
+                                                      color: iconColor,
+                                                      borderRadius: const BorderRadius.only(
+                                                        topLeft: Radius.circular(12),
+                                                        bottomLeft: Radius.circular(12),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  Expanded(
+                                                    child: Padding(
+                                                      padding: const EdgeInsets.fromLTRB(11, 10, 12, 10),
+                                                      child: Column(
+                                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                                        children: [
+                                                          Row(
+                                                            children: [
+                                                              Container(
+                                                                padding: const EdgeInsets.all(5),
+                                                                decoration: BoxDecoration(
+                                                                  color: iconColor.withValues(alpha: 0.16),
+                                                                  borderRadius: BorderRadius.circular(7),
+                                                                ),
+                                                                child: Icon(iconData, color: iconColor, size: 15),
+                                                              ),
+                                                              const SizedBox(width: 7),
+                                                              Expanded(
+                                                                child: Text(
+                                                                  msg['channel'] ?? '',
+                                                                  maxLines: 1,
+                                                                  overflow: TextOverflow.ellipsis,
+                                                                  style: const TextStyle(
+                                                                    color: Colors.white70,
+                                                                    fontSize: 11.5,
+                                                                    fontWeight: FontWeight.w600,
+                                                                  ),
+                                                                ),
+                                                              ),
+                                                              if (hasRadarPoint) ...[
+                                                                Container(
+                                                                  margin: const EdgeInsets.only(right: 6),
+                                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                                  decoration: BoxDecoration(
+                                                                    color: Colors.cyanAccent.withValues(alpha: 0.14),
+                                                                    borderRadius: BorderRadius.circular(6),
+                                                                    border: Border.all(
+                                                                      color: Colors.cyanAccent.withValues(alpha: 0.4),
+                                                                      width: 0.7,
+                                                                    ),
+                                                                  ),
+                                                                  child: const Row(
+                                                                    mainAxisSize: MainAxisSize.min,
+                                                                    children: [
+                                                                      Icon(Icons.radar_rounded, size: 11, color: Colors.cyanAccent),
+                                                                      SizedBox(width: 3),
+                                                                      Text(
+                                                                        'Радар',
+                                                                        style: TextStyle(
+                                                                          color: Colors.cyanAccent,
+                                                                          fontSize: 10,
+                                                                          fontWeight: FontWeight.w700,
+                                                                        ),
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                                ),
+                                                              ],
+                                                              Text(
+                                                                timeStr,
+                                                                style: TextStyle(
+                                                                  color: Colors.grey.shade400,
+                                                                  fontSize: 11.5,
+                                                                  fontWeight: FontWeight.w700,
+                                                                ),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                          const SizedBox(height: 7),
+                                                          if (msg['reply_quoted_text'] != null && msg['reply_quoted_text'].toString().trim().isNotEmpty) ...[
+                                                            Container(
+                                                              margin: const EdgeInsets.only(bottom: 6.0),
+                                                              padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                                                              decoration: BoxDecoration(
+                                                                color: Colors.purple.withValues(alpha: 0.12),
+                                                                borderRadius: BorderRadius.circular(6.0),
+                                                                border: const Border(
+                                                                  left: BorderSide(color: Colors.purpleAccent, width: 3.0),
+                                                                ),
+                                                              ),
+                                                              child: Row(
+                                                                mainAxisSize: MainAxisSize.min,
+                                                                children: [
+                                                                  const Icon(Icons.reply, size: 13, color: Colors.purpleAccent),
+                                                                  const SizedBox(width: 4),
+                                                                  Flexible(
+                                                                    child: Text(
+                                                                      'У відповідь на: ${msg['reply_quoted_text']}',
+                                                                      maxLines: 2,
+                                                                      overflow: TextOverflow.ellipsis,
+                                                                      style: const TextStyle(
+                                                                        color: Colors.purpleAccent,
+                                                                        fontSize: 11.5,
+                                                                        fontStyle: FontStyle.italic,
+                                                                        fontWeight: FontWeight.w500,
+                                                                      ),
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                            ),
+                                                          ] else if (msg['reply_to_post_id'] != null) ...[
+                                                            Container(
+                                                              margin: const EdgeInsets.only(bottom: 6.0),
+                                                              padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                                                              decoration: BoxDecoration(
+                                                                color: Colors.purple.withValues(alpha: 0.12),
+                                                                borderRadius: BorderRadius.circular(6.0),
+                                                                border: const Border(
+                                                                  left: BorderSide(color: Colors.purpleAccent, width: 3.0),
+                                                                ),
+                                                              ),
+                                                              child: const Row(
+                                                                mainAxisSize: MainAxisSize.min,
+                                                                children: [
+                                                                  Icon(Icons.reply, size: 13, color: Colors.purpleAccent),
+                                                                  SizedBox(width: 4),
+                                                                  Text(
+                                                                    'У відповідь на попередній пост',
+                                                                    style: TextStyle(
+                                                                      color: Colors.purpleAccent,
+                                                                      fontSize: 11.5,
+                                                                      fontStyle: FontStyle.italic,
+                                                                      fontWeight: FontWeight.w500,
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                            ),
+                                                          ],
+                                                          Text(
+                                                            msg['text'] ?? '',
+                                                            style: const TextStyle(
+                                                              fontSize: 13.8,
+                                                              height: 1.36,
+                                                              color: Color(0xFFEDF0F7),
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                          ),
+                        ],
                       ),
                     ),
-                  ],
-                ),
-              ),
-            );
+                  ),
+                );
                 return isWide ? Row(children: [mapWidget, listWidget]) : Column(children: [mapWidget, listWidget]);
               }
             ),

@@ -1411,27 +1411,20 @@ double _getDefaultThreatSpeed(String type) {
 
 int _getThreatLevel(bool isAlert, bool isKyivRegion, List<Map<String, dynamic>> threats, {bool globalMissileThreat = false}) {
   if (!isAlert) return 1;
-  bool hasMissiles = globalMissileThreat || threats.any((t) => 
-      t['type'] == 'missile_ballistic' || 
-      t['type'] == 'missile_hypersonic' || 
-      t['type'] == 'missile_supersonic' ||
-      t['type'] == 'missile_cruise' ||
-      t['type'] == 'kab'
-  );
-  if (hasMissiles) return 3; 
-  return 2; 
+  if (globalMissileThreat) return 3;
+  return 2;
 }
 
 Color _getAlertFillColor(int threatLevel) {
-  if (threatLevel == 3) return Colors.red.withValues(alpha: 0.45);
-  if (threatLevel == 2) return const Color(0xFFF57C00).withValues(alpha: 0.45);
+  if (threatLevel == 3) return const Color(0xFFE53935).withValues(alpha: 0.44);
+  if (threatLevel == 2) return const Color(0xFFFFC107).withValues(alpha: 0.36);
   return Colors.transparent;
 }
 
 Color _getAlertBorderColor(int threatLevel, {bool defaultFaint = true}) {
-  if (threatLevel == 3) return Colors.redAccent.withValues(alpha: 0.9);
-  if (threatLevel == 2) return const Color(0xFFF57C00).withValues(alpha: 0.9);
-  return defaultFaint ? Colors.white.withValues(alpha: 0.1) : Colors.transparent;
+  if (threatLevel == 3) return Colors.redAccent.withValues(alpha: 0.95);
+  if (threatLevel == 2) return const Color(0xFFFFD54F).withValues(alpha: 0.95);
+  return defaultFaint ? Colors.white.withValues(alpha: 0.14) : Colors.transparent;
 }
 
 double minDistanceToPointMeters(LatLng center, List<LatLng> path) {

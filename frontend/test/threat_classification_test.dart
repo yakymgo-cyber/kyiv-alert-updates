@@ -411,8 +411,8 @@ void main() {
       expect(getThreatTtlSeconds('missile_cruise'), equals(180));
       expect(getThreatTtlSeconds('missile_supersonic'), equals(180));
       expect(getThreatTtlSeconds('kab'), equals(180));
-      expect(getThreatTtlSeconds('shahed'), equals(1320));
-      expect(getThreatTtlSeconds('shahed_jet'), equals(1320));
+      expect(getThreatTtlSeconds('shahed'), equals(300));
+      expect(getThreatTtlSeconds('shahed_jet'), equals(300));
       expect(getThreatTtlSeconds('uav_guided'), equals(1320));
       expect(getThreatTtlSeconds('uav_recon'), equals(1320));
       expect(getThreatTtlSeconds('uav_decoy'), equals(1320));
