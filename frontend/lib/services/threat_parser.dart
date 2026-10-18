@@ -79,8 +79,8 @@ int getThreatTtlSeconds(String rawType, {bool isExitingOblast = false}) {
   }
 }
 
-/// Скільки секунд тримати знак питання на місці втрати фіксації (і шукати відновлення цілі)
-const int kLostTrackRetentionSec = 600;
+/// Скільки секунд тримати знак питання на місці втрати фіксації (і шукати відновлення цілі) — 3 хвилини
+const int kLostTrackRetentionSec = 180;
 
 /// Базовий радіус невидимого кола пошуку відновлення (похибка геокодування районів), м
 const double kLostTrackBaseRadiusMeters = 3000.0;

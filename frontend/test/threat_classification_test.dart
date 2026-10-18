@@ -419,6 +419,8 @@ void main() {
       // Exiting oblast override
       expect(getThreatTtlSeconds('shahed', isExitingOblast: true), equals(45));
       expect(getThreatTtlSeconds('missile_cruise', isExitingOblast: true), equals(45));
+      // Lost track question mark retention on map (3 minutes = 180 seconds)
+      expect(kLostTrackRetentionSec, equals(180));
     });
 
     test('Recognizes channel typos in Kyiv locations dictionary', () {

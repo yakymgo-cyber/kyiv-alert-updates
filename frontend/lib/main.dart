@@ -916,7 +916,7 @@ class UkraineAlarmTargetsNotifier extends Notifier<List<Map<String, dynamic>>> {
             }
           }
 
-          // Позначаємо цілі, які зникли з радара map.ukrainealarm.com, та прибираємо старі (> 5 хв після зникнення)
+          // Позначаємо цілі, які зникли з радара map.ukrainealarm.com, та прибираємо старі (> 3 хв після зникнення)
           final List<String> toRemove = [];
           _trackedTargets.forEach((tid, entry) {
             if (!seenActiveIds.contains(tid)) {
@@ -5470,7 +5470,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                           _selectedThreatMsgId = msgId;
                                         });
                                       },
-                                      effectiveNow: now,
+                                      effectiveNow: (_isReplayMode || isTestMode) ? now : null,
                                     ),
                                   ),
                                   if (_rulerTargetPoint != null) ...[
@@ -8364,10 +8364,14 @@ class _AnimatedThreatsLayerState extends State<AnimatedThreatsLayer> with Single
           );
         }
 
-        // Знак питання на місці втрати фіксації шахеда (коло пошуку відновлення на мапі не малюється)
+        // Знак питання на місці втрати фіксації шахеда (прибирається через 3 хвилини, коло пошуку відновлення на мапі не малюється)
         for (final lost in widget.lostTracks) {
           final lostPt = lost['point'];
           if (lostPt is! LatLng) continue;
+          final lostAt = lost['lostAt'] as DateTime?;
+          if (lostAt != null && effectiveNow.difference(lostAt).inSeconds > kLostTrackRetentionSec) {
+            continue;
+          }
           markers.add(
             Marker(
               point: lostPt,
