@@ -136,9 +136,43 @@ class KyivAlertApp extends StatelessWidget {
   }
 }
 
+void _populateCachedRegionPolygons(Map<String, dynamic> geoJson) {
+  if (_kCachedRegionPolygons.isNotEmpty) return;
+  final features = geoJson['features'] as List?;
+  if (features == null) return;
+  for (final feature in features) {
+    final props = feature['properties'];
+    if (props == null) continue;
+    final name = (props['name:uk'] ?? props['name'] ?? '').toString();
+    final geometry = feature['geometry'];
+    if (geometry == null || name.isEmpty) continue;
+
+    final type = geometry['type'];
+    final coords = geometry['coordinates'];
+    final List<List<LatLng>> polyList = [];
+
+    if (type == 'Polygon') {
+      final List<LatLng> points = (coords[0] as List)
+          .map((p) => LatLng((p[1] as num).toDouble(), (p[0] as num).toDouble()))
+          .toList();
+      polyList.add(points);
+    } else if (type == 'MultiPolygon') {
+      for (final poly in (coords as List)) {
+        final List<LatLng> points = (poly[0] as List)
+            .map((p) => LatLng((p[1] as num).toDouble(), (p[0] as num).toDouble()))
+            .toList();
+        polyList.add(points);
+      }
+    }
+    _kCachedRegionPolygons[name] = polyList;
+  }
+}
+
 final geoJsonProvider = FutureProvider<Map<String, dynamic>>((ref) async {
   final jsonString = await rootBundle.loadString('assets/ukraine.geojson');
-  return json.decode(jsonString);
+  final decoded = json.decode(jsonString) as Map<String, dynamic>;
+  _populateCachedRegionPolygons(decoded);
+  return decoded;
 });
 
 class AlertsNotifier extends Notifier<Map<String, bool>> {
@@ -148,6 +182,7 @@ class AlertsNotifier extends Notifier<Map<String, bool>> {
   bool _isFetching = false;
   int _cycleCount = 0;
   final Map<String, bool> _cachedUbillingAlerts = {};
+  final Map<String, bool> _cachedUkraineAlarmAlerts = {};
 
   static const List<String> _kKyivOblastDistricts = [
     'білоцерківський',
@@ -158,6 +193,17 @@ class AlertsNotifier extends Notifier<Map<String, bool>> {
     'обухівський',
     'фастівський',
   ];
+
+  static const Set<String> _kKyivOblastUkraineAlarmDistrictIds = {
+    '14', // Київська область
+    '73', // Білоцерківський район
+    '74', // Вишгородський район
+    '75', // Бучанський район
+    '76', // Обухівський район
+    '77', // Фастівський район
+    '78', // Бориспільський район
+    '79', // Броварський район
+  };
 
   @override
   Map<String, bool> build() {
@@ -179,6 +225,105 @@ class AlertsNotifier extends Notifier<Map<String, bool>> {
   }
 
   Future<void> refreshNow() => _fetchData();
+
+  /// Отримує стан повітряних тривог та їхній рівень (Yellow = БпЛА, Red = Ракети)
+  /// напряму з https://map.ukrainealarm.com/api/v2/data/mapUpdate
+  Future<({int? cityLevel, int? oblastLevel})> _fetchUkraineAlarmMapUpdate() async {
+    try {
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final resp = await _httpClient.get(
+        Uri.parse('https://map.ukrainealarm.com/api/v2/data/mapUpdate?_t=$ts'),
+        headers: const {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json',
+          'Referer': 'https://map.ukrainealarm.com/',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+        },
+      ).timeout(const Duration(seconds: 4));
+
+      if (resp.statusCode != 200 || resp.bodyBytes.length > 524288) {
+        return (cityLevel: null, oblastLevel: null);
+      }
+
+      final data = json.decode(utf8.decode(resp.bodyBytes, allowMalformed: true));
+      if (data is! Map<String, dynamic>) {
+        return (cityLevel: null, oblastLevel: null);
+      }
+      final alertsList = data['alerts'];
+      if (alertsList is! List) {
+        return (cityLevel: null, oblastLevel: null);
+      }
+
+      int cityLevel = 1;
+      int oblastLevel = 1;
+      final Map<String, int> oblastMaxLevels = {};
+
+      for (final item in alertsList) {
+        if (item is! Map) continue;
+        final String regionId = (item['regionId'] ?? '').toString().trim();
+        final String regionName = (item['regionName'] ?? '').toString().trim();
+        final String regionNameLower = regionName.toLowerCase();
+        final activeAlerts = item['activeAlerts'];
+        if (activeAlerts is! List || activeAlerts.isEmpty) continue;
+
+        int entryAirLevel = 1;
+        for (final a in activeAlerts) {
+          if (a is! Map) continue;
+          final String aType = (a['type'] ?? '').toString().toUpperCase();
+          if (aType != 'AIR' && aType != '1') continue;
+
+          int levelForThisAlert = 2; // За замовчуванням повітряна тривога = Жовта (2)
+          final levels = a['activeAlertLevels'];
+          if (levels is List) {
+            for (final lv in levels) {
+              if (lv is! Map) continue;
+              final String alertLevelStr = (lv['alertLevel'] ?? '').toString().toLowerCase();
+              final String reasonStr = (lv['reason'] ?? '').toString().toLowerCase();
+              if (alertLevelStr == 'red' ||
+                  reasonStr.contains('червоний') ||
+                  reasonStr.contains('ракет')) {
+                levelForThisAlert = 3;
+                break;
+              }
+            }
+          }
+          if (levelForThisAlert > entryAirLevel) {
+            entryAirLevel = levelForThisAlert;
+          }
+        }
+
+        if (entryAirLevel < 2) continue;
+
+        if (regionId == '31' || regionName == 'м. Київ' || regionNameLower == 'київ') {
+          if (entryAirLevel > cityLevel) cityLevel = entryAirLevel;
+        } else if (_kKyivOblastUkraineAlarmDistrictIds.contains(regionId) ||
+            regionName == 'Київська область' ||
+            _kKyivOblastDistricts.any((d) => regionNameLower.contains(d))) {
+          if (entryAirLevel > oblastLevel) oblastLevel = entryAirLevel;
+        } else if (regionName.endsWith('область') || regionName.contains('Крим')) {
+          final prev = oblastMaxLevels[regionName] ?? 1;
+          if (entryAirLevel > prev) {
+            oblastMaxLevels[regionName] = entryAirLevel;
+          }
+        }
+      }
+
+      _cachedUkraineAlarmAlerts.clear();
+      oblastMaxLevels.forEach((regionName, lvl) {
+        _cachedUkraineAlarmAlerts[regionName] = lvl >= 2;
+        _cachedUkraineAlarmAlerts['__red_$regionName'] = lvl == 3;
+      });
+      _cachedUkraineAlarmAlerts['м. Київ'] = cityLevel >= 2;
+      _cachedUkraineAlarmAlerts['__red_м. Київ'] = cityLevel == 3;
+      _cachedUkraineAlarmAlerts['Київська область'] = oblastLevel >= 2;
+      _cachedUkraineAlarmAlerts['__red_Київська область'] = oblastLevel == 3;
+
+      return (cityLevel: cityLevel, oblastLevel: oblastLevel);
+    } catch (_) {
+      return (cityLevel: null, oblastLevel: null);
+    }
+  }
 
   Future<List<(DateTime, String)>> _fetchTelegramChannelPosts(String channel) async {
     try {
@@ -257,6 +402,7 @@ class AlertsNotifier extends Notifier<Map<String, bool>> {
             ((t.contains('оголошено повітряну тривогу') ||
                     t.contains('повітряна тривога в києві') ||
                     t.contains('повітряна тривога у києві') ||
+                    t.contains('у києві оголошена повітряну тривогу') ||
                     t.contains('у києві оголошена повітряна тривога')) &&
                 (t.contains('🔴') ||
                     t.contains('ракет') ||
@@ -362,6 +508,7 @@ class AlertsNotifier extends Notifier<Map<String, bool>> {
           : Future.value();
 
       final results = await Future.wait([
+        _fetchUkraineAlarmMapUpdate(),
         _fetchOfficialKyivCityLevel(),
         _fetchOfficialKyivOblastLevel(),
         ubillingFuture,
@@ -369,18 +516,38 @@ class AlertsNotifier extends Notifier<Map<String, bool>> {
 
       if (_disposed) return;
 
-      final int? officialCityLevel = results[0] as int?;
-      final int? officialOblastLevel = results[1] as int?;
+      final uaLevels = results[0] as ({int? cityLevel, int? oblastLevel});
+      final int? tgCityLevel = results[1] as int?;
+      final int? tgOblastLevel = results[2] as int?;
 
       final Map<String, bool> alerts = Map<String, bool>.from(_cachedUbillingAlerts);
+      _cachedUkraineAlarmAlerts.forEach((k, v) {
+        alerts[k] = v;
+      });
 
-      if (officialCityLevel != null) {
-        alerts['м. Київ'] = officialCityLevel >= 2;
-        alerts['__red_м. Київ'] = officialCityLevel == 3;
+      // Звіряємо map.ukrainealarm.com із офіційними каналами КМВА/КМДА/КОВА:
+      // map.ukrainealarm.com дає миттєвий статус і рівень (Yellow/Red), а при розбіжності в рівні під час тривоги враховуємо найвищий рівень (Red = 3)
+      int? effectiveCityLevel = uaLevels.cityLevel ?? tgCityLevel;
+      if (uaLevels.cityLevel != null && tgCityLevel != null) {
+        if (uaLevels.cityLevel! >= 2 && tgCityLevel == 3) {
+          effectiveCityLevel = 3;
+        }
       }
-      if (officialOblastLevel != null) {
-        alerts['Київська область'] = officialOblastLevel >= 2;
-        alerts['__red_Київська область'] = officialOblastLevel == 3;
+
+      int? effectiveOblastLevel = uaLevels.oblastLevel ?? tgOblastLevel;
+      if (uaLevels.oblastLevel != null && tgOblastLevel != null) {
+        if (uaLevels.oblastLevel! >= 2 && tgOblastLevel == 3) {
+          effectiveOblastLevel = 3;
+        }
+      }
+
+      if (effectiveCityLevel != null) {
+        alerts['м. Київ'] = effectiveCityLevel >= 2;
+        alerts['__red_м. Київ'] = effectiveCityLevel == 3;
+      }
+      if (effectiveOblastLevel != null) {
+        alerts['Київська область'] = effectiveOblastLevel >= 2;
+        alerts['__red_Київська область'] = effectiveOblastLevel == 3;
       }
 
       state = alerts;
@@ -396,6 +563,392 @@ class AlertsNotifier extends Notifier<Map<String, bool>> {
 final alertsProvider = NotifierProvider<AlertsNotifier, Map<String, bool>>(() {
   return AlertsNotifier();
 });
+
+// --- Інтеграція радарних цілей https://map.ukrainealarm.com/ ---
+const double _kUaViewboxWidth = 260.0;
+const double _kUaViewboxHeight = 175.0;
+const double _kUaWest = 22.137059;
+const double _kUaEast = 40.2275801;
+const double _kUaSouth = 44.184598;
+const double _kUaNorth = 52.3791473;
+
+double _uaToRadians(double deg) => deg * math.pi / 180.0;
+double _uaToDegrees(double rad) => rad * 180.0 / math.pi;
+double _uaMercatorY(double lat) => math.log(math.tan(math.pi / 4.0 + _uaToRadians(lat) / 2.0));
+
+/// Конвертує нормалізовані Mercator-координати (x, y + markerOffsetX, markerOffsetY)
+/// із https://map.ukrainealarm.com/api/v2/data/targetsForMapsState/public?separateTracks=true у LatLng
+LatLng _ukraineAlarmNormalizedToLatLng(
+  double normX,
+  double normY, {
+  double offsetX = 0.0,
+  double offsetY = 0.0,
+}) {
+  final double projWidth = _uaToRadians(_kUaEast - _kUaWest);
+  final double projHeight = _uaMercatorY(_kUaNorth) - _uaMercatorY(_kUaSouth);
+  final double projScale = math.min(_kUaViewboxWidth / projWidth, _kUaViewboxHeight / projHeight);
+  final double projOffsetX = (_kUaViewboxWidth - projWidth * projScale) / 2.0;
+  final double projOffsetY = (_kUaViewboxHeight - projHeight * projScale) / 2.0;
+
+  final double mapX = (normX + offsetX) * _kUaViewboxWidth;
+  final double mapY = (normY + offsetY) * _kUaViewboxHeight;
+  final double lon = _kUaWest + _uaToDegrees((mapX - projOffsetX) / projScale);
+  final double projLat = _uaMercatorY(_kUaNorth) - (mapY - projOffsetY) / projScale;
+  final double lat = _uaToDegrees(2.0 * math.atan(math.exp(projLat)) - math.pi / 2.0);
+  return LatLng(lat, lon);
+}
+
+LatLng _offsetLatLngByBearingMeters(LatLng origin, double bearingDegrees, double distanceMeters) {
+  const double earthRadius = 6378137.0;
+  final double angDist = distanceMeters / earthRadius;
+  final double brng = _uaToRadians(bearingDegrees);
+  final double lat1 = _uaToRadians(origin.latitude);
+  final double lon1 = _uaToRadians(origin.longitude);
+
+  final double lat2 = math.asin(
+    math.sin(lat1) * math.cos(angDist) + math.cos(lat1) * math.sin(angDist) * math.cos(brng),
+  );
+  final double lon2 = lon1 +
+      math.atan2(
+        math.sin(brng) * math.sin(angDist) * math.cos(lat1),
+        math.cos(angDist) - math.sin(lat1) * math.sin(lat2),
+      );
+  return LatLng(_uaToDegrees(lat2), _uaToDegrees(lon2));
+}
+
+bool _isPointInPolygonRings(LatLng point, List<List<LatLng>> rings) {
+  for (final poly in rings) {
+    if (poly.length < 3) continue;
+    bool inside = false;
+    for (int i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      final xi = poly[i].longitude, yi = poly[i].latitude;
+      final xj = poly[j].longitude, yj = poly[j].latitude;
+      final intersect = ((yi > point.latitude) != (yj > point.latitude)) &&
+          (point.longitude < (xj - xi) * (point.latitude - yi) / ((yj - yi) == 0 ? 1e-12 : (yj - yi)) + xi);
+      if (intersect) inside = !inside;
+    }
+    if (inside) return true;
+  }
+  return false;
+}
+
+/// Перевіряє, чи точка знаходиться в межах м. Київ або Київської області
+/// (або на безпосередньому підльоті <= 10 км до кордону Київської області з курсом всередину області)
+bool _isPointInKyivOblastOrCity(LatLng point, {double? headingDeg}) {
+  if (_isPointInKyivCity(point)) return true;
+  final oblastPolys = _kCachedRegionPolygons['Київська область'];
+  if (oblastPolys != null && oblastPolys.isNotEmpty) {
+    if (_isPointInPolygonRings(point, oblastPolys)) return true;
+    if (headingDeg != null) {
+      // Якщо ціль за <= 10 км від межі області і її вектор вказує всередину Київської області
+      final LatLng aheadPt = _offsetLatLngByBearingMeters(point, headingDeg, 10000.0);
+      if (_isPointInPolygonRings(aheadPt, oblastPolys) || _isPointInKyivCity(aheadPt)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  // Fallback до завантаження GeoJSON: координатний прямокутник Київської області
+  return point.latitude >= 49.18 &&
+      point.latitude <= 51.55 &&
+      point.longitude >= 29.25 &&
+      point.longitude <= 32.20;
+}
+
+String _findNearestKyivSettlementName(LatLng point) {
+  String bestName = _isPointInKyivCity(point) ? 'Київ' : 'Київська область';
+  double bestDist = double.infinity;
+  const distance = Distance();
+  _kKyivLocations.forEach((key, val) {
+    if (_kExternalBorderKeys.contains(key)) return;
+    if (key == 'київ' || key == 'київщин') return;
+    final d = distance.as(LengthUnit.Meter, point, LatLng(val.$1, val.$2));
+    if (d < bestDist && d <= 22000.0) {
+      bestDist = d;
+      bestName = val.$3;
+    }
+  });
+  return bestName;
+}
+
+class UkraineAlarmTargetsNotifier extends Notifier<List<Map<String, dynamic>>> {
+  Timer? _timer;
+  final http.Client _httpClient = http.Client();
+  bool _disposed = false;
+  bool _isFetching = false;
+  final Map<String, Map<String, dynamic>> _trackedTargets = {};
+
+  @override
+  List<Map<String, dynamic>> build() {
+    _disposed = false;
+    ref.onDispose(() {
+      _disposed = true;
+      _timer?.cancel();
+      _httpClient.close();
+    });
+    _scheduleNextFetch(0);
+    return const [];
+  }
+
+  void _scheduleNextFetch(int seconds) {
+    if (_disposed) return;
+    _timer?.cancel();
+    _timer = Timer(Duration(seconds: seconds), _fetchTargets);
+  }
+
+  Future<void> refreshNow() => _fetchTargets();
+
+  (String, String, double) _classifyUkraineAlarmTarget(
+    String detectedType,
+    String iconName,
+    String formular, {
+    String? prevType,
+    String? prevLabel,
+    double? prevSpeed,
+  }) {
+    final dt = detectedType.toLowerCase();
+    final ic = iconName.toLowerCase();
+    final fm = formular.toLowerCase();
+
+    if (dt.isEmpty && ic.isEmpty && fm.isEmpty && prevType != null && prevLabel != null && prevSpeed != null) {
+      return (prevType, prevLabel, prevSpeed);
+    }
+
+    if (dt.contains('shahedjet') || ic.contains('shahed_jet') || fm.contains('реакт')) {
+      return ('shahed_jet', 'Реактивний БпЛА', 550.0);
+    }
+    if (dt.contains('mesh') || ic.contains('mesh') || fm.contains('mesh')) {
+      return ('uav_guided', 'Удар. mesh-дрон 🎮', 195.0);
+    }
+    if (dt.contains('orlan') || ic.contains('orlan') || ic.contains('ic_drone') || fm.contains('розвід')) {
+      return ('uav_recon', 'РозвідБпЛА 👁️', 130.0);
+    }
+    if (dt.contains('kab') || ic.contains('airbomb') || fm.contains('каб')) {
+      return ('kab', 'КАБ / КАР', 850.0);
+    }
+    if (dt.contains('ballistic') || ic.contains('ballistic') || fm.contains('баліст')) {
+      return ('missile_ballistic', 'Балістична ціль', 5000.0);
+    }
+    if (dt.contains('missile') || dt.contains('banderol') || ic.contains('missile') || ic.contains('banderol') || fm.contains('ракет') || fm.contains('бандерол')) {
+      return ('missile_cruise', 'Крилата ракета', 850.0);
+    }
+    if (prevType != null && prevType != 'shahed' && dt == 'shahed') {
+      return (prevType, prevLabel ?? 'Шахед / БпЛА', prevSpeed ?? 185.0);
+    }
+    return ('shahed', 'Шахед / БпЛА', 185.0);
+  }
+
+  Future<void> _fetchTargets() async {
+    if (_disposed || _isFetching) return;
+    _isFetching = true;
+    try {
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final resp = await _httpClient.get(
+        Uri.parse('https://map.ukrainealarm.com/api/v2/data/targetsForMapsState/public?separateTracks=true&_t=$ts'),
+        headers: const {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json',
+          'Referer': 'https://map.ukrainealarm.com/',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+        },
+      ).timeout(const Duration(seconds: 4));
+
+      if (resp.statusCode == 200 && resp.bodyBytes.length <= 524288) {
+        final data = json.decode(utf8.decode(resp.bodyBytes, allowMalformed: true));
+        if (data is Map<String, dynamic>) {
+          final nowUtc = DateTime.now().toUtc();
+          final rawTargets = (data['targets'] as List?) ?? const [];
+          final rawFromList = (data['movement'] is Map ? (data['movement']['from'] as List?) : null) ?? const [];
+
+          final Map<String, LatLng> fromByTrackId = {};
+          for (final f in rawFromList) {
+            if (f is! Map) continue;
+            final tid = (f['trackId'] ?? '').toString();
+            final fx = (f['x'] as num?)?.toDouble();
+            final fy = (f['y'] as num?)?.toDouble();
+            if (tid.isNotEmpty && fx != null && fy != null) {
+              final offX = (f['markerOffsetX'] as num?)?.toDouble() ?? 0.0;
+              final offY = (f['markerOffsetY'] as num?)?.toDouble() ?? 0.0;
+              fromByTrackId[tid] = _ukraineAlarmNormalizedToLatLng(fx, fy, offsetX: offX, offsetY: offY);
+            }
+          }
+
+          final Set<String> seenActiveIds = {};
+          const distance = Distance();
+
+          for (final raw in rawTargets) {
+            if (raw is! Map) continue;
+            final String trackId = (raw['trackId'] ?? '').toString().trim();
+            final double? nx = (raw['x'] as num?)?.toDouble();
+            final double? ny = (raw['y'] as num?)?.toDouble();
+            if (trackId.isEmpty || nx == null || ny == null) continue;
+
+            final double offX = (raw['markerOffsetX'] as num?)?.toDouble() ?? 0.0;
+            final double offY = (raw['markerOffsetY'] as num?)?.toDouble() ?? 0.0;
+            final LatLng currentPt = _ukraineAlarmNormalizedToLatLng(nx, ny, offsetX: offX, offsetY: offY);
+            final double? heading = (raw['heading'] as num?)?.toDouble();
+            final int count = (raw['currentCount'] as num?)?.toInt() ?? 1;
+            final bool isFading = raw['isFading'] == true;
+
+            final prevEntry = _trackedTargets[trackId];
+            final bool isInKyivRegion = _isPointInKyivOblastOrCity(currentPt, headingDeg: heading);
+
+            if (!isInKyivRegion) {
+              if (prevEntry != null && prevEntry['wasInKyivRegion'] == true) {
+                // Ціль щойно вийшла за межі Київської області
+                prevEntry['isExitingOblast'] = true;
+                prevEntry['point'] = currentPt;
+                prevEntry['lastSeenAt'] = nowUtc;
+                prevEntry['disappearedAt'] ??= nowUtc;
+              }
+              continue;
+            }
+
+            seenActiveIds.add(trackId);
+
+            final String rawDetectedType = (raw['detectedType'] ?? '').toString();
+            final String rawIconName = (raw['iconName'] ?? '').toString();
+            final String rawFormular = (raw['formular'] ?? '').toString();
+
+            final (type, label, speed) = _classifyUkraineAlarmTarget(
+              rawDetectedType,
+              rawIconName,
+              rawFormular,
+              prevType: prevEntry?['type'] as String?,
+              prevLabel: prevEntry?['label'] as String?,
+              prevSpeed: prevEntry?['speed'] as double?,
+            );
+
+            LatLng? predictedPt;
+            if (raw['prediction'] is Map) {
+              final pred = raw['prediction'] as Map;
+              final toX = (pred['toX'] as num?)?.toDouble();
+              final toY = (pred['toY'] as num?)?.toDouble();
+              if (toX != null && toY != null) {
+                predictedPt = _ukraineAlarmNormalizedToLatLng(toX, toY);
+              }
+            }
+
+            final String nearestName = _findNearestKyivSettlementName(currentPt);
+
+            if (prevEntry == null) {
+              final List<LatLng> waypoints = [];
+              final List<String> locNames = [];
+              final LatLng? fromPt = fromByTrackId[trackId];
+              if (fromPt != null && distance.as(LengthUnit.Meter, fromPt, currentPt) >= 250.0) {
+                waypoints.add(fromPt);
+                final fromName = _findNearestKyivSettlementName(fromPt);
+                if (fromName.isNotEmpty) locNames.add(fromName);
+              } else if (heading != null) {
+                final LatLng tailPt = _offsetLatLngByBearingMeters(currentPt, (heading + 180.0) % 360.0, 2400.0);
+                waypoints.add(tailPt);
+              }
+              waypoints.add(currentPt);
+              if (nearestName.isNotEmpty && (locNames.isEmpty || locNames.last != nearestName)) {
+                locNames.add(nearestName);
+              }
+
+              _trackedTargets[trackId] = {
+                'trackId': trackId,
+                'type': type,
+                'label': label,
+                'speed': speed,
+                'point': currentPt,
+                'predictedPt': predictedPt,
+                'heading': heading ?? prevEntry?['heading'],
+                'count': count,
+                'isFading': isFading,
+                'waypoints': waypoints,
+                'locNames': locNames,
+                'nearestName': nearestName,
+                'firstSeenAt': nowUtc,
+                'lastMovedAt': nowUtc,
+                'lastSeenAt': nowUtc,
+                'disappearedAt': null,
+                'wasInKyivRegion': true,
+                'isExitingOblast': false,
+              };
+            } else {
+              final LatLng prevPt = prevEntry['point'] as LatLng;
+              final double movedMeters = distance.as(LengthUnit.Meter, prevPt, currentPt);
+              final List<LatLng> waypoints = List<LatLng>.from((prevEntry['waypoints'] as List<LatLng>?) ?? [prevPt]);
+              final List<String> locNames = List<String>.from((prevEntry['locNames'] as List<String>?) ?? []);
+
+              DateTime lastMovedAt = (prevEntry['lastMovedAt'] as DateTime?) ?? nowUtc;
+              if (movedMeters >= 85.0) {
+                lastMovedAt = nowUtc;
+                if (waypoints.isEmpty || distance.as(LengthUnit.Meter, waypoints.last, currentPt) >= 280.0) {
+                  waypoints.add(currentPt);
+                  if (waypoints.length > 10) {
+                    waypoints.removeAt(0);
+                  }
+                } else {
+                  waypoints[waypoints.length - 1] = currentPt;
+                }
+                if (nearestName.isNotEmpty && (locNames.isEmpty || locNames.last != nearestName)) {
+                  locNames.add(nearestName);
+                  if (locNames.length > 4) {
+                    locNames.removeAt(0);
+                  }
+                }
+              } else if (heading != null && waypoints.length == 1) {
+                final LatLng tailPt = _offsetLatLngByBearingMeters(currentPt, (heading + 180.0) % 360.0, 2400.0);
+                waypoints.insert(0, tailPt);
+              }
+
+              prevEntry['type'] = type;
+              prevEntry['label'] = label;
+              prevEntry['speed'] = speed;
+              prevEntry['point'] = currentPt;
+              prevEntry['predictedPt'] = predictedPt;
+              if (heading != null) prevEntry['heading'] = heading;
+              prevEntry['count'] = count;
+              prevEntry['isFading'] = isFading;
+              prevEntry['waypoints'] = waypoints;
+              prevEntry['locNames'] = locNames;
+              prevEntry['nearestName'] = nearestName;
+              prevEntry['lastMovedAt'] = lastMovedAt;
+              prevEntry['lastSeenAt'] = nowUtc;
+              prevEntry['disappearedAt'] = null;
+              prevEntry['wasInKyivRegion'] = true;
+              prevEntry['isExitingOblast'] = false;
+            }
+          }
+
+          // Позначаємо цілі, які зникли з радара map.ukrainealarm.com, та прибираємо старі (> 5 хв після зникнення)
+          final List<String> toRemove = [];
+          _trackedTargets.forEach((tid, entry) {
+            if (!seenActiveIds.contains(tid)) {
+              entry['disappearedAt'] ??= nowUtc;
+              final DateTime disappearedAt = entry['disappearedAt'] as DateTime;
+              if (nowUtc.difference(disappearedAt).inSeconds > kLostTrackRetentionSec) {
+                toRemove.add(tid);
+              }
+            }
+          });
+          for (final tid in toRemove) {
+            _trackedTargets.remove(tid);
+          }
+
+          if (!_disposed) {
+            state = _trackedTargets.values.map((e) => Map<String, dynamic>.from(e)).toList();
+          }
+        }
+      }
+    } catch (_) {
+    } finally {
+      _isFetching = false;
+    }
+
+    _scheduleNextFetch(5);
+  }
+}
+
+final ukraineAlarmTargetsProvider = NotifierProvider<UkraineAlarmTargetsNotifier, List<Map<String, dynamic>>>(() {
+  return UkraineAlarmTargetsNotifier();
+});
+
 
 
 class WatchedLocationsNotifier extends Notifier<List<WatchedLocation>> {
@@ -1585,6 +2138,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     if (state == AppLifecycleState.resumed) {
       ref.read(messagesProvider.notifier).refreshNow();
       ref.read(alertsProvider.notifier).refreshNow();
+      ref.read(ukraineAlarmTargetsProvider.notifier).refreshNow();
       final now = DateTime.now();
       if (_lastResumeCheck == null || now.difference(_lastResumeCheck!).inSeconds > 60) {
         _lastResumeCheck = now;
@@ -2088,6 +2642,7 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
     var messages = ref.watch(messagesProvider);
     final geoJsonAsync = ref.watch(geoJsonProvider);
     var alerts = ref.watch(alertsProvider); 
+    final ukraineAlarmTargets = ref.watch(ukraineAlarmTargetsProvider);
     final remoteConfig = ref.watch(remoteConfigProvider);
     final bool hasUpdate = remoteConfig.versionCode > kCurrentVersionCode && remoteConfig.apkUrl.isNotEmpty; 
 
@@ -2471,7 +3026,12 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             final txtLen = (m['text'] ?? '').toString().length;
                             return '${m['id']}:${m['date']}:$txtLen:$mergedLen';
                           }).join('|');
-                          final trajectorySig = '${topMsgsSig}_${messages.length}_${alerts['м. Київ']}_${alerts['__red_м. Київ']}_${alerts['Київська область']}_${alerts['__red_Київська область']}_${_isReplayMode}_${_replayOffsetMinutes.toStringAsFixed(1)}_${now.millisecondsSinceEpoch ~/ 2500}';
+                          final uaSig = ukraineAlarmTargets.map((u) {
+                            final pt = u['point'] as LatLng?;
+                            final disp = u['disappearedAt'] != null ? 'L' : 'A';
+                            return '${u['trackId']}:$disp:${pt?.latitude.toStringAsFixed(3)}:${pt?.longitude.toStringAsFixed(3)}:${u['heading']}';
+                          }).join('|');
+                          final trajectorySig = '${topMsgsSig}_${messages.length}_${uaSig}_${alerts['м. Київ']}_${alerts['__red_м. Київ']}_${alerts['Київська область']}_${alerts['__red_Київська область']}_${_isReplayMode}_${_replayOffsetMinutes.toStringAsFixed(1)}_${now.millisecondsSinceEpoch ~/ 2500}';
 
                           List<Map<String, dynamic>> activeAirDefenses = [];
                           String? northThreatLabel;
@@ -2650,12 +3210,17 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                           }
 
                           threats = [];
+                          final List<({LatLng point, DateTime time, String? channel})> recentlyClearedLocations = [];
+                          final List<({LatLng? point, DateTime time})> explicitDestroyedEvents = [];
+                          DateTime? lastKyivCityClearTime;
+                          DateTime? lastFullOblastClearTime;
+
                           final bool hasRecentDangerMsg = messages.take(25).any((m) {
                             if (m['type'] != 'danger' || m['date'] == null) return false;
                             final dt = DateTime.tryParse(m['date'].toString())?.toUtc();
                             return dt != null && now.difference(dt).inMinutes.abs() <= 20;
                           });
-                          if ((anyAlert || hasRecentDangerMsg) && messages.isNotEmpty) {
+                          if ((anyAlert || hasRecentDangerMsg || ukraineAlarmTargets.isNotEmpty) && messages.isNotEmpty) {
                             final recentMsgs = messages.take(120).where((msg) {
                               if (msg['date'] == null) return true;
                               try {
@@ -2671,7 +3236,6 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                             DateTime? missileContextTime;
                             bool activeJetDroneContext = false;
                             DateTime? jetContextTime;
-                            final List<({LatLng point, DateTime time, String? channel})> recentlyClearedLocations = [];
                             String? normPost(dynamic p) {
                               if (p == null) return null;
                               final s = p.toString().toLowerCase().split('?').first.trim();
@@ -2823,6 +3387,21 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   msgTextLower.contains('знищено'));
 
                               if (isDestroyedMsg) {
+                                LatLng? explicitDestroyLoc;
+                                for (final entry in _kKyivLocations.entries) {
+                                  if (entry.key.length >= 4 &&
+                                      !_kExternalBorderKeys.contains(entry.key) &&
+                                      entry.key != 'київ' &&
+                                      entry.key != 'київщин' &&
+                                      msgTextLower.contains(entry.key)) {
+                                    explicitDestroyLoc = LatLng(entry.value.$1, entry.value.$2);
+                                    break;
+                                  }
+                                }
+                                explicitDestroyedEvents.add((point: explicitDestroyLoc, time: msgTime));
+                                if (explicitDestroyLoc != null) {
+                                  recentlyClearedLocations.add((point: explicitDestroyLoc, time: msgTime, channel: msg['channel']?.toString()));
+                                }
                                 if (threats.isNotEmpty) {
                                   final msgChannel = msg['channel']?.toString();
                                   final replyToPostId = normPost(msg['reply_to_post_id'] ?? msg['replyToPostId']);
@@ -3028,6 +3607,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     !msgTextLower.contains('област');
 
                                 if (isKyivCityClear) {
+                                  if (!onlyClearMissiles) {
+                                    lastKyivCityClearTime = msgTime;
+                                  }
                                   // Якщо написали "Київ чисто" — прибираємо цілі лише в адміністративних межах міста Київ
                                   threats.removeWhere((t) {
                                     if (onlyClearUavs && !onlyClearMissiles && (t['type'] == 'missile_ballistic' || t['type'] == 'missile_cruise' || t['type'] == 'missile_hypersonic' || t['type'] == 'missile_supersonic' || t['type'] == 'kab')) return false;
@@ -3046,6 +3628,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                     return shouldRemove;
                                   });
                                 } else if (isFullOblastClear) {
+                                  if (!onlyClearMissiles) {
+                                    lastFullOblastClearTime = msgTime;
+                                  }
                                   // Повний офіційний відбій або чисто по всій області — очищуємо всі цілі області
                                   threats.removeWhere((t) {
                                     if (onlyClearUavs && !onlyClearMissiles && (t['type'] == 'missile_ballistic' || t['type'] == 'missile_cruise' || t['type'] == 'missile_hypersonic' || t['type'] == 'missile_supersonic' || t['type'] == 'kab')) return false;
@@ -3068,6 +3653,9 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   ).toList();
 
                                   if (specificLocs.isNotEmpty) {
+                                    for (final loc in specificLocs) {
+                                      recentlyClearedLocations.add((point: LatLng(loc.value.$1, loc.value.$2), time: msgTime, channel: msg['channel']?.toString()));
+                                    }
                                     // Якщо вказано конкретний район/місто (наприклад "Бровари чисто") — позначаємо як збиту/втрачену в радіусі <= 14 км
                                     for (final t in threats) {
                                       if (t['isDestroyed'] == true) continue;
@@ -4218,6 +4806,275 @@ class _MainScreenState extends ConsumerState<MainScreen> with WidgetsBindingObse
                                   path.insert(0, startPt);
                                   t['waypoints'] = List<LatLng>.from(path);
                                 }
+                              }
+                            }
+                          }
+
+                          // Звіряємо цілі з радара https://map.ukrainealarm.com/ (м. Київ та Київська область)
+                          // із нашими Telegram-каналами щодо корегування маршруту, зникнення та збиття
+                          if (!isTestMode && !_isReplayMode && ukraineAlarmTargets.isNotEmpty) {
+                            const distance = Distance();
+                            for (final ua in ukraineAlarmTargets) {
+                              final String trackId = (ua['trackId'] ?? '').toString();
+                              final LatLng? uaPt = ua['point'] as LatLng?;
+                              if (trackId.isEmpty || uaPt == null) continue;
+
+                              final DateTime uaLastMoved = (ua['lastMovedAt'] as DateTime?) ?? now;
+                              final DateTime? uaDisappearedAt = ua['disappearedAt'] as DateTime?;
+                              final String uaType = (ua['type'] ?? 'shahed').toString();
+                              final String uaLabel = (ua['label'] ?? 'Шахед / БпЛА').toString();
+                              final double uaSpeed = (ua['speed'] as num?)?.toDouble() ?? 185.0;
+                              final double? uaHeading = (ua['heading'] as num?)?.toDouble();
+                              final LatLng? uaPredictedPt = ua['predictedPt'] as LatLng?;
+                              final bool uaIsExiting = ua['isExitingOblast'] == true;
+
+                              if (!_isPointInKyivOblastOrCity(uaPt, headingDeg: uaHeading) && !uaIsExiting) {
+                                continue;
+                              }
+
+                              // 1. Звірка зникнення та збиття за повідомленнями в Telegram-каналах:
+                              // а) Якщо в каналах оголошено "область чисто / відбій" або "Київ чисто" після останнього руху цілі
+                              if (lastFullOblastClearTime != null &&
+                                  lastFullOblastClearTime.isAfter(uaLastMoved.subtract(const Duration(seconds: 40)))) {
+                                continue;
+                              }
+                              if (_isPointInKyivCity(uaPt) &&
+                                  lastKyivCityClearTime != null &&
+                                  lastKyivCityClearTime.isAfter(uaLastMoved.subtract(const Duration(seconds: 40)))) {
+                                continue;
+                              }
+
+                              // б) Якщо в каналах повідомлено про збиття ("мінус", "збито", "впав", "нема його") поблизу
+                              DateTime? matchedDestroyTime;
+                              for (final ev in explicitDestroyedEvents) {
+                                if (ev.time.isAfter(uaLastMoved.subtract(const Duration(seconds: 45)))) {
+                                  if (ev.point != null) {
+                                    if (distance.as(LengthUnit.Meter, ev.point!, uaPt) <= 15000.0) {
+                                      matchedDestroyTime = ev.time;
+                                      break;
+                                    }
+                                  } else if (now.difference(ev.time).inSeconds.abs() <= 90 && threats.every((t) => t['isDestroyed'] == true)) {
+                                    matchedDestroyTime = ev.time;
+                                    break;
+                                  }
+                                }
+                              }
+                              if (matchedDestroyTime != null) {
+                                if (now.difference(matchedDestroyTime).inSeconds.abs() <= 35 && uaDisappearedAt == null) {
+                                  final String uaNearest = (ua['nearestName'] ?? _findNearestKyivSettlementName(uaPt)).toString();
+                                  threats.add({
+                                    'type': uaType,
+                                    'label': uaLabel,
+                                    'locNames': <String>[uaNearest],
+                                    'route': uaNearest,
+                                    'isExitingOblast': false,
+                                    'ttl': 35,
+                                    'speed': uaSpeed,
+                                    'path': <LatLng>[uaPt],
+                                    'waypoints': <LatLng>[uaPt],
+                                    'hasPendingTarget': false,
+                                    'lastUpdated': matchedDestroyTime,
+                                    'destroyedAt': matchedDestroyTime,
+                                    'isDestroyed': true,
+                                    'staggerDelay': 0.0,
+                                    'text': '$uaLabel $uaNearest збито'.toLowerCase(),
+                                    'rawText': '💥 Ціль збито ($uaNearest)',
+                                    'msgId': 'ua_destroyed_$trackId',
+                                    'historyMsgIds': <dynamic>{'ua_destroyed_$trackId'},
+                                    'channel': 'UkraineAlarm Radar 📡',
+                                    'uaTrackId': trackId,
+                                  });
+                                }
+                                continue;
+                              }
+
+                              // в) Якщо в каналах повідомлено "локаційно чисто / втрачено / без фіксації" в радіусі <= 14 км
+                              final bool isLocallyClearedByTg = recentlyClearedLocations.any((clr) =>
+                                  clr.time.isAfter(uaLastMoved.subtract(const Duration(seconds: 30))) &&
+                                  distance.as(LengthUnit.Meter, clr.point, uaPt) <= 14000.0);
+                              if (isLocallyClearedByTg) {
+                                continue;
+                              }
+
+                              final int uaTtl = getThreatTtlSeconds(uaType, isExitingOblast: uaIsExiting);
+                              final int elapsedSinceMoved = now.difference(uaLastMoved).inSeconds;
+
+                              // 2. Обробка зникнення цілі з радара map.ukrainealarm.com (або відсутності руху > 5 хв для шахедів):
+                              if (uaDisappearedAt != null || elapsedSinceMoved > uaTtl) {
+                                final DateTime effectiveLostTime = uaDisappearedAt ?? uaLastMoved.add(Duration(seconds: uaTtl));
+                                final int sinceLostSec = now.difference(effectiveLostTime).inSeconds;
+                                if (isLostTrackableType(uaType) &&
+                                    !uaIsExiting &&
+                                    sinceLostSec >= 0 &&
+                                    sinceLostSec <= kLostTrackRetentionSec) {
+                                  final double spdMs = uaSpeed * (1000.0 / 3600.0);
+                                  final double recoveryRadiusM = kLostTrackBaseRadiusMeters + spdMs * sinceLostSec;
+
+                                  // Перевіряємо, чи наші Telegram-канали продовжили маршрут цієї цілі в межах радіуса пошуку
+                                  final bool continuedByTelegram = threats.any((tg) {
+                                    if (tg['isDestroyed'] == true) return false;
+                                    final tgPath = (tg['path'] as List<LatLng>?) ?? const [];
+                                    if (tgPath.isEmpty) return false;
+                                    return distance.as(LengthUnit.Meter, uaPt, tgPath.last) <= math.max(recoveryRadiusM, 16000.0);
+                                  });
+
+                                  if (!continuedByTelegram) {
+                                    final bool alreadyInLost = lostTracks.any((lt) =>
+                                        distance.as(LengthUnit.Meter, lt['point'] as LatLng, uaPt) <= 2500.0);
+                                    if (!alreadyInLost) {
+                                      lostTracks.add({
+                                        'point': uaPt,
+                                        'lostAt': effectiveLostTime,
+                                        'type': uaType,
+                                        'msgId': 'ua_$trackId',
+                                      });
+                                    }
+                                  }
+                                }
+                                continue;
+                              }
+
+                              // 3. Звірка та корегування маршруту з активними цілями з Telegram-каналів:
+                              final bool uaIsMissile = uaType.contains('missile') || uaType == 'kab';
+                              Map<String, dynamic>? matchedTgThreat;
+                              double bestMatchDist = double.infinity;
+
+                              for (final tg in threats) {
+                                if (tg['isDestroyed'] == true || tg['uaTrackId'] != null) continue;
+                                final String tgType = (tg['type'] ?? 'shahed').toString();
+                                final bool tgIsMissile = tgType.contains('missile') || tgType == 'kab';
+                                if (uaIsMissile != tgIsMissile) continue;
+
+                                final List<LatLng> tgPath = (tg['path'] as List<LatLng>?) ?? const [];
+                                if (tgPath.isEmpty) continue;
+                                final List<LatLng> tgWaypoints = (tg['waypoints'] as List<LatLng>?) ?? tgPath;
+
+                                double d = distance.as(LengthUnit.Meter, uaPt, tgPath.last);
+                                if (tgPath.length >= 2) {
+                                  d = math.min(d, distance.as(LengthUnit.Meter, uaPt, tgPath.first));
+                                }
+                                if (tgWaypoints.length >= 2) {
+                                  d = math.min(
+                                    d,
+                                    distance.as(LengthUnit.Meter, uaPt, tgWaypoints[tgWaypoints.length - 2]),
+                                  );
+                                }
+
+                                final double maxMergeDist = (uaIsMissile || uaType == 'shahed_jet' || tgType == 'shahed_jet')
+                                    ? 42000.0
+                                    : 22000.0;
+                                if (d <= maxMergeDist && d < bestMatchDist) {
+                                  bestMatchDist = d;
+                                  matchedTgThreat = tg;
+                                }
+                              }
+
+                              // Якщо ціль відновила фіксацію всередині уявного кола втраченої цілі ('?') — відновлюємо її та прибираємо '?'
+                              lostTracks.removeWhere((lt) {
+                                final LatLng ltPt = lt['point'] as LatLng;
+                                final DateTime ltTime = (lt['lostAt'] as DateTime?) ?? now;
+                                final double sinceLostSec = now.difference(ltTime).inSeconds.clamp(0, kLostTrackRetentionSec).toDouble();
+                                final double spdMs = uaSpeed * (1000.0 / 3600.0);
+                                final double radiusM = kLostTrackBaseRadiusMeters + spdMs * sinceLostSec;
+                                return distance.as(LengthUnit.Meter, ltPt, uaPt) <= radiusM;
+                              });
+
+                              final String uaNearestName = (ua['nearestName'] ?? _findNearestKyivSettlementName(uaPt)).toString();
+
+                              if (matchedTgThreat != null) {
+                                matchedTgThreat['uaTrackId'] = trackId;
+                                final DateTime tgTime = (matchedTgThreat['lastUpdated'] as DateTime?) ?? now;
+                                final List<LatLng> tgPath = List<LatLng>.from((matchedTgThreat['path'] as List<LatLng>?) ?? const []);
+                                final List<LatLng> tgWaypoints = List<LatLng>.from((matchedTgThreat['waypoints'] as List<LatLng>?) ?? tgPath);
+                                final List<String> tgLocNames = List<String>.from((matchedTgThreat['locNames'] as List<String>?) ?? const []);
+
+                                final bool tgHasNewerCourseVector = (matchedTgThreat['hasPendingTarget'] == true ||
+                                        tgTime.isAfter(uaLastMoved.subtract(const Duration(seconds: 25)))) &&
+                                    tgPath.isNotEmpty &&
+                                    distance.as(LengthUnit.Meter, uaPt, tgPath.last) >= 1200.0;
+
+                                if (tgHasNewerCourseVector) {
+                                  // Корегування маршруту: точна поточна координата береться з радара UkraineAlarm (uaPt),
+                                  // а цільовий напрямок руху — зі свіжого повідомлення моніторингового каналу (tgPath.last)
+                                  matchedTgThreat['path'] = <LatLng>[uaPt, tgPath.last];
+                                  if (tgWaypoints.length >= 2) {
+                                    tgWaypoints[tgWaypoints.length - 2] = uaPt;
+                                  } else {
+                                    tgWaypoints.insert(0, uaPt);
+                                  }
+                                  matchedTgThreat['waypoints'] = tgWaypoints;
+                                } else {
+                                  // Радар UkraineAlarm має свіжіше фактичне положення / курс: оновлюємо позицію та вектор
+                                  if (uaPredictedPt != null && distance.as(LengthUnit.Meter, uaPt, uaPredictedPt) >= 600.0) {
+                                    matchedTgThreat['path'] = <LatLng>[uaPt, uaPredictedPt];
+                                  } else if (uaHeading != null) {
+                                    final LatLng tailPt = _offsetLatLngByBearingMeters(uaPt, (uaHeading + 180.0) % 360.0, 2400.0);
+                                    matchedTgThreat['path'] = <LatLng>[tailPt, uaPt];
+                                  } else if (tgWaypoints.isNotEmpty && distance.as(LengthUnit.Meter, tgWaypoints.last, uaPt) >= 400.0) {
+                                    tgWaypoints.add(uaPt);
+                                    matchedTgThreat['path'] = <LatLng>[tgWaypoints[tgWaypoints.length - 2], tgWaypoints.last];
+                                    matchedTgThreat['waypoints'] = tgWaypoints;
+                                  }
+                                  if (uaNearestName.isNotEmpty && (tgLocNames.isEmpty || tgLocNames.last != uaNearestName)) {
+                                    tgLocNames.add(uaNearestName);
+                                    matchedTgThreat['locNames'] = tgLocNames;
+                                    matchedTgThreat['route'] = tgLocNames.join(' → ');
+                                  }
+                                }
+
+                                if (uaLastMoved.isAfter(tgTime)) {
+                                  matchedTgThreat['lastUpdated'] = uaLastMoved;
+                                }
+                                if (uaType == 'shahed_jet' && matchedTgThreat['type'] == 'shahed') {
+                                  matchedTgThreat['type'] = 'shahed_jet';
+                                  matchedTgThreat['label'] = 'Реактивний БпЛА';
+                                  matchedTgThreat['speed'] = math.max((matchedTgThreat['speed'] as num?)?.toDouble() ?? 550.0, 550.0);
+                                } else if ((uaType == 'uav_guided' || uaType == 'uav_recon') && matchedTgThreat['type'] == 'shahed') {
+                                  matchedTgThreat['type'] = uaType;
+                                  matchedTgThreat['label'] = uaLabel;
+                                }
+                              } else {
+                                // Ціль є на радарі map.ukrainealarm.com у Київській області / Києві, але ще не описана в тексті каналів
+                                List<LatLng> uaWaypoints = List<LatLng>.from((ua['waypoints'] as List<LatLng>?) ?? <LatLng>[uaPt]);
+                                if (uaWaypoints.length == 1 && uaHeading != null) {
+                                  uaWaypoints.insert(
+                                    0,
+                                    _offsetLatLngByBearingMeters(uaPt, (uaHeading + 180.0) % 360.0, 2400.0),
+                                  );
+                                }
+                                final List<LatLng> uaActivePath = uaWaypoints.length >= 2
+                                    ? <LatLng>[uaWaypoints[uaWaypoints.length - 2], uaWaypoints.last]
+                                    : List<LatLng>.from(uaWaypoints);
+                                final List<String> uaLocNames = List<String>.from(
+                                  (ua['locNames'] as List<String>?) ?? <String>[uaNearestName],
+                                );
+                                String uaRoute = uaLocNames.isNotEmpty ? uaLocNames.join(' → ') : uaNearestName;
+                                if (uaIsExiting && !uaRoute.contains('(Вихід з області)')) {
+                                  uaRoute = '$uaRoute (Вихід з області)';
+                                }
+
+                                threats.add({
+                                  'type': uaType,
+                                  'label': uaLabel,
+                                  'locNames': uaLocNames,
+                                  'route': uaRoute,
+                                  'isExitingOblast': uaIsExiting,
+                                  'ttl': uaTtl,
+                                  'speed': uaSpeed,
+                                  'path': uaActivePath,
+                                  'waypoints': uaWaypoints,
+                                  'hasPendingTarget': false,
+                                  'lastUpdated': uaLastMoved,
+                                  'staggerDelay': 0.0,
+                                  'text': '$uaLabel $uaRoute'.toLowerCase(),
+                                  'rawText': '📡 Радар UkraineAlarm: $uaLabel • $uaRoute',
+                                  'msgId': 'ua_$trackId',
+                                  'historyMsgIds': <dynamic>{'ua_$trackId'},
+                                  'channel': 'UkraineAlarm Radar 📡',
+                                  'uaTrackId': trackId,
+                                  'isCircling': false,
+                                  'isDescending': false,
+                                });
                               }
                             }
                           }
